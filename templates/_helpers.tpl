@@ -101,6 +101,30 @@ app.kubernetes.io/component: valkey
 {{/* Secrets                                                             */}}
 {{/* ------------------------------------------------------------------ */}}
 
+{{/*
+Generated credentials are memoised for the lifetime of one render pass.
+
+`.Values` is the same map for every template in a release, so a key written
+into it is visible to every later `include` in the same install/upgrade/template
+run, and is gone by the next one. That is exactly the lifetime a generated
+credential needs, and the reason each helper below writes through
+`.Values.__memo` instead of recomputing.
+
+Without it a helper that falls through to `randAlphaNum` returns a *different*
+value on every call, and several of these are legitimately called more than
+once per render: once to populate the Secret, and again when a Deployment
+re-renders the same template to hash it into a `checksum/` annotation. The two
+copies then disagree. Where the value also lands in two different places — the
+open-metrics password goes into settings.yml *and* into its own key, the relay
+scrape token into the token file *and* into its own Secret — the disagreement
+is a silent authentication failure rather than a visible error.
+
+The key is `__memo` at the root of `.Values` and deliberately not under
+`.Values.searxng`, so `deepCopy .Values.searxng.settings` in
+searxng.settingsYaml cannot pick it up and emit it into settings.yml. Nothing
+in this chart serialises `.Values` wholesale.
+*/}}
+
 {{- define "searxng.secretName" -}}
 {{- if .Values.searxng.existingSecret -}}
 {{- .Values.searxng.existingSecret -}}
@@ -124,16 +148,20 @@ The lookup keeps the key stable across `helm upgrade`. It returns nothing during
 `helm template`/`--dry-run`, so GitOps tooling must use `existingSecret`.
 */}}
 {{- define "searxng.secretKeyValue" -}}
-{{- if .Values.searxng.secretKey -}}
-{{- .Values.searxng.secretKey -}}
-{{- else -}}
+{{- if not (hasKey .Values "__memo") -}}{{- $_ := set .Values "__memo" dict -}}{{- end -}}
+{{- $memo := index .Values "__memo" -}}
+{{- if not (hasKey $memo "secretKey") -}}
+{{- $value := .Values.searxng.secretKey -}}
+{{- if not $value -}}
 {{- $existing := lookup "v1" "Secret" .Release.Namespace (include "searxng.fullname" .) -}}
 {{- if and $existing $existing.data (hasKey $existing.data "secret-key") -}}
-{{- index $existing.data "secret-key" | b64dec -}}
-{{- else -}}
-{{- randAlphaNum 64 -}}
+{{- $value = index $existing.data "secret-key" | b64dec -}}
 {{- end -}}
 {{- end -}}
+{{- if not $value -}}{{- $value = randAlphaNum 64 -}}{{- end -}}
+{{- $_ := set $memo "secretKey" $value -}}
+{{- end -}}
+{{- index $memo "secretKey" -}}
 {{- end -}}
 
 {{- define "searxng.valkey.secretName" -}}
@@ -158,16 +186,20 @@ valkey-password
 
 {{/* Resolve the Valkey password, preserving any already in the cluster. */}}
 {{- define "searxng.valkey.passwordValue" -}}
-{{- if .Values.valkey.auth.password -}}
-{{- .Values.valkey.auth.password -}}
-{{- else -}}
+{{- if not (hasKey .Values "__memo") -}}{{- $_ := set .Values "__memo" dict -}}{{- end -}}
+{{- $memo := index .Values "__memo" -}}
+{{- if not (hasKey $memo "valkeyPassword") -}}
+{{- $value := .Values.valkey.auth.password -}}
+{{- if not $value -}}
 {{- $existing := lookup "v1" "Secret" .Release.Namespace (include "searxng.valkey.fullname" .) -}}
 {{- if and $existing $existing.data (hasKey $existing.data "valkey-password") -}}
-{{- index $existing.data "valkey-password" | b64dec -}}
-{{- else -}}
-{{- randAlphaNum 32 -}}
+{{- $value = index $existing.data "valkey-password" | b64dec -}}
 {{- end -}}
 {{- end -}}
+{{- if not $value -}}{{- $value = randAlphaNum 32 -}}{{- end -}}
+{{- $_ := set $memo "valkeyPassword" $value -}}
+{{- end -}}
+{{- index $memo "valkeyPassword" -}}
 {{- end -}}
 
 {{/* Headless service DNS name SearXNG connects to (always the primary). */}}
@@ -296,6 +328,9 @@ Tokens already present in the cluster are reused so that upgrading the chart
 does not invalidate every configured MCP client.
 */}}
 {{- define "searxng.relay.tokenFile" -}}
+{{- if not (hasKey .Values "__memo") -}}{{- $_ := set .Values "__memo" dict -}}{{- end -}}
+{{- $memo := index .Values "__memo" -}}
+{{- if not (hasKey $memo "relayTokenFile") -}}
 {{- $existingRaw := "" -}}
 {{- $sec := lookup "v1" "Secret" .Release.Namespace (include "searxng.relay.fullname" .) -}}
 {{- if $sec -}}
@@ -324,7 +359,9 @@ does not invalidate every configured MCP client.
 {{- if .Values.mcpRelay.metrics.enabled -}}
 {{- $out = append $out (printf "%s:%s" (include "searxng.relay.scrapeIdentity" .) (include "searxng.relay.scrapeToken" .)) -}}
 {{- end -}}
-{{- join "\n" $out -}}
+{{- $_ := set $memo "relayTokenFile" (join "\n" $out) -}}
+{{- end -}}
+{{- index $memo "relayTokenFile" -}}
 {{- end -}}
 
 {{/*
@@ -378,6 +415,9 @@ true
 {{- if and .token (lt (len .token) 32) -}}
 {{- fail (printf "mcpRelay: token for identity %q is shorter than the 32 character minimum." .name) -}}
 {{- end -}}
+{{- end -}}
+{{- if and .Values.mcpRelay.metrics.enabled .Values.mcpRelay.metrics.existingSecret (not .Values.mcpRelay.auth.existingSecret) -}}
+{{- fail "mcpRelay: metrics.existingSecret is set but auth.existingSecret is not. The relay authenticates every request against one token file, /metrics included, so the scrape token has to appear both in your Secret and on a `prometheus` line in the token file — and the chart cannot read your Secret to copy it there. Either manage both externally (see examples/gen-secrets.sh) or let the chart manage both." -}}
 {{- end -}}
 {{- if and .Values.mcpRelay.searxngTokens.existingSecret .Values.mcpRelay.searxngTokens.tokens -}}
 {{- fail "mcpRelay.searxngTokens: set either .tokens or .existingSecret, not both." -}}
@@ -553,20 +593,30 @@ settings file. settings.yml is a Secret in all cases, so there is nowhere for
 this to leak to.
 */}}
 {{- define "searxng.openMetricsPassword" -}}
-{{- if .Values.searxng.metrics.password -}}
-{{- .Values.searxng.metrics.password -}}
-{{- else -}}
-{{- $sec := lookup "v1" "Secret" .Release.Namespace (include "searxng.fullname" .) -}}
-{{- $found := "" -}}
+{{- if not (hasKey .Values "__memo") -}}{{- $_ := set .Values "__memo" dict -}}{{- end -}}
+{{- $memo := index .Values "__memo" -}}
+{{- if not (hasKey $memo "openMetricsPassword") -}}
+{{- $value := .Values.searxng.metrics.password -}}
+{{- if not $value -}}
+{{/*
+Look this up on the settings Secret, which is where it is written. It used to
+look on searxng.fullname — the secret_key object — where the key has never
+existed, so the lookup could never hit and a new password was minted on every
+render.
+*/}}
+{{- $sec := lookup "v1" "Secret" .Release.Namespace (include "searxng.settingsObjectName" .) -}}
 {{- if $sec -}}
 {{- if $sec.data -}}
 {{- if hasKey $sec.data "open-metrics-password" -}}
-{{- $found = index $sec.data "open-metrics-password" | b64dec -}}
+{{- $value = index $sec.data "open-metrics-password" | b64dec -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}
-{{- if $found -}}{{- $found -}}{{- else -}}{{- randAlphaNum 32 -}}{{- end -}}
 {{- end -}}
+{{- if not $value -}}{{- $value = randAlphaNum 32 -}}{{- end -}}
+{{- $_ := set $memo "openMetricsPassword" $value -}}
+{{- end -}}
+{{- index $memo "openMetricsPassword" -}}
 {{- end -}}
 
 {{/* Name of the Secret holding settings.yml. */}}
@@ -594,14 +644,28 @@ scrape-token
 {{- end -}}
 
 {{- define "searxng.relay.scrapeToken" -}}
-{{- $sec := lookup "v1" "Secret" .Release.Namespace (printf "%s-scrape" (include "searxng.relay.fullname" .)) -}}
-{{- $found := "" -}}
+{{- if not (hasKey .Values "__memo") -}}{{- $_ := set .Values "__memo" dict -}}{{- end -}}
+{{- $memo := index .Values "__memo" -}}
+{{- if not (hasKey $memo "relayScrapeToken") -}}
+{{- $value := "" -}}
+{{/*
+Resolve the object and key through the same helpers the Secret itself uses,
+rather than hardcoding "<relay>-scrape" / "scrape-token". Hardcoding meant that
+with metrics.existingSecret set the lookup missed and a fresh token was minted
+into the token file, which is not the one Prometheus presents.
+*/}}
+{{- $name := include "searxng.relay.scrapeSecretName" . -}}
+{{- $key := include "searxng.relay.scrapeSecretKey" . -}}
+{{- $sec := lookup "v1" "Secret" .Release.Namespace $name -}}
 {{- if $sec -}}
 {{- if $sec.data -}}
-{{- if hasKey $sec.data "scrape-token" -}}
-{{- $found = index $sec.data "scrape-token" | b64dec -}}
+{{- if hasKey $sec.data $key -}}
+{{- $value = index $sec.data $key | b64dec -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}
-{{- if $found -}}{{- $found -}}{{- else -}}{{- randAlphaNum 64 -}}{{- end -}}
+{{- if not $value -}}{{- $value = randAlphaNum 64 -}}{{- end -}}
+{{- $_ := set $memo "relayScrapeToken" $value -}}
+{{- end -}}
+{{- index $memo "relayScrapeToken" -}}
 {{- end -}}
