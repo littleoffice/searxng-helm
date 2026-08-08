@@ -209,7 +209,7 @@ producing a pod that cannot start.
 {{- end }}
 {{- $server := .Values.searxng.settings.server | default dict -}}
 {{- if hasKey $server "secret_key" -}}
-{{- fail "searxng.settings.server.secret_key must not be set: it would be written to a ConfigMap in plain text. Use searxng.secretKey or searxng.existingSecret instead." -}}
+{{- fail "searxng.settings.server.secret_key must not be set: it is injected as $SEARXNG_SECRET from a dedicated Secret, so a copy here would only add a second place to rotate and leak from. Use searxng.secretKey or searxng.existingSecret instead." -}}
 {{- end -}}
 {{- if hasKey .Values.searxng.settings "valkey" -}}
 {{- fail "searxng.settings.valkey must not be set: the connection URL contains the password and is injected from a Secret. Use the valkey.* values instead." -}}
@@ -549,8 +549,8 @@ app.kubernetes.io/component: valkey-replica
 {{/*
 SearXNG's OpenMetrics endpoint is gated by a password in general.open_metrics.
 There is no environment-variable override for it, so it has to live in the
-settings file — which is why enabling metrics moves settings.yml from a
-ConfigMap into a Secret.
+settings file. settings.yml is a Secret in all cases, so there is nowhere for
+this to leak to.
 */}}
 {{- define "searxng.openMetricsPassword" -}}
 {{- if .Values.searxng.metrics.password -}}
@@ -569,7 +569,7 @@ ConfigMap into a Secret.
 {{- end -}}
 {{- end -}}
 
-{{/* Name of the object holding settings.yml — kind depends on metrics. */}}
+{{/* Name of the Secret holding settings.yml. */}}
 {{- define "searxng.settingsObjectName" -}}
 {{- printf "%s-settings" (include "searxng.fullname" .) -}}
 {{- end -}}

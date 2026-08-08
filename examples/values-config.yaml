@@ -1,10 +1,10 @@
-# The ConfigMap side of things.
+# The config-file side of things.
 #
-# The chart renders these ConfigMaps for you — there is no "bring your own
+# The chart renders these objects for you — there is no "bring your own
 # ConfigMap" path, because the settings file has to stay in lockstep with the
 # env vars the chart injects:
 #
-#   <release>-searxng-settings   settings.yml       <- searxng.settings
+#   <release>-searxng-settings   settings.yml       <- searxng.settings  (Secret)
 #   <release>-searxng-limiter    limiter.toml       <- searxng.limiter (limiter on)
 #   <release>-searxng-extra      arbitrary files    <- searxng.extraConfigFiles
 #

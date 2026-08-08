@@ -50,7 +50,6 @@ searxng:
     enabled: true
     # Leaving password empty is fine even under GitOps: it lives in the
     # chart-managed settings Secret, not in a resource you hand-maintain.
-    # Note this flips settings.yml from a ConfigMap to a Secret.
     password: ""
     username: prometheus
 

@@ -164,19 +164,16 @@ spec:
             {{- end }}
       volumes:
         - name: settings
-          {{- if include "searxng.metricsEnabled" . }}
-          # A Secret, not a ConfigMap: general.open_metrics is a credential.
+          # Always a Secret: settings.yml can carry engine tokens, per-engine
+          # api_key/password fields and proxy credentials, none of which have an
+          # upstream env-var override. `items` projects only settings.yml so the
+          # open-metrics basic-auth keys are not mounted into the container.
           secret:
             secretName: {{ include "searxng.settingsObjectName" . }}
             defaultMode: 0440
             items:
               - key: settings.yml
                 path: settings.yml
-          {{- else }}
-          configMap:
-            name: {{ include "searxng.settingsObjectName" . }}
-            defaultMode: 0444
-          {{- end }}
         {{- if $limiter }}
         - name: limiter
           configMap:

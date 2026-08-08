@@ -193,7 +193,8 @@ searxng:
 
   # --- secret_key -----------------------------------------------------------
   # Injected as $SEARXNG_SECRET, which overrides server.secret_key in
-  # settings.yml. Never rendered into a ConfigMap.
+  # settings.yml. Kept in its own Secret, separate from the settings Secret, so
+  # it can be rotated on its own.
   #
   # Leave `secretKey` empty to have the chart generate one. It is preserved
   # across `helm upgrade` via a cluster lookup.
@@ -210,10 +211,10 @@ searxng:
   # format, gated by HTTP Basic auth whose password is general.open_metrics.
   #
   # That password has no environment-variable override upstream, so it can only
-  # be supplied through the settings file. Enabling this therefore renders
-  # settings.yml into a *Secret* instead of a ConfigMap (same mount path, same
-  # content) rather than writing a credential into a ConfigMap. Disable it and
-  # the ConfigMap comes back.
+  # be supplied through the settings file — which is a Secret in all cases, so
+  # there is nowhere for it to leak to. Enabling this additionally writes
+  # open-metrics-username / open-metrics-password as separate keys on that same
+  # Secret, for the ServiceMonitor's basicAuth to reference.
   metrics:
     enabled: false
     # Generated and preserved across upgrades when empty.
@@ -222,9 +223,15 @@ searxng:
     username: "prometheus"
 
   # --- settings.yml ---------------------------------------------------------
-  # Rendered verbatim into a ConfigMap and mounted read-only at
+  # Rendered verbatim into a Secret and mounted read-only at
   # /etc/searxng/settings.yml. Anything from
   # https://docs.searxng.org/admin/settings/ is valid here.
+  #
+  # It is a Secret rather than a ConfigMap because engine `tokens`, per-engine
+  # `api_key` / `password` fields and inline credentials in `outgoing.proxies`
+  # have no env-var override upstream and can only live in this file. Note that
+  # these values still end up in your values file — keep it out of git, or set
+  # them through a --set on a values file you hold outside the repo.
   #
   # Do NOT put server.secret_key here — the chart will refuse to render.
   # Do NOT put valkey.url here — it is injected from a Secret.

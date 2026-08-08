@@ -1,7 +1,15 @@
 {{- include "searxng.validate" . -}}
 {{- include "searxng.relay.validate" . -}}
 {{- include "searxng.assertNonRootAll" . -}}
-{{- if include "searxng.metricsEnabled" . }}
+{{/*
+Always a Secret, never a ConfigMap. Engine `tokens`, per-engine `api_key` /
+`password` fields, inline credentials in `outgoing.proxies` and the
+`general.open_metrics` password can only live in settings.yml — upstream's
+env-var overrides are a fixed allowlist (SEARXNG_SECRET, SEARXNG_VALKEY_URL,
+SEARXNG_BASE_URL, ...) that engine credentials are not on and will not join.
+Rendering this as a ConfigMap when metrics happen to be off put those in plain
+text and made confidentiality depend on an unrelated monitoring toggle.
+*/}}
 apiVersion: v1
 kind: Secret
 metadata:
@@ -15,26 +23,11 @@ metadata:
   {{- end }}
 type: Opaque
 stringData:
+  {{- if include "searxng.metricsEnabled" . }}
   # Consumed by the ServiceMonitor's basicAuth.
   open-metrics-username: {{ .Values.searxng.metrics.username | quote }}
   open-metrics-password: {{ include "searxng.openMetricsPassword" . | quote }}
-  settings.yml: |
-    {{- include "searxng.settingsHeader" . | nindent 4 }}
-    {{- include "searxng.settingsYaml" . | nindent 4 }}
-{{- else }}
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: {{ include "searxng.settingsObjectName" . }}
-  namespace: {{ .Release.Namespace }}
-  labels:
-    {{- include "searxng.serverLabels" . | nindent 4 }}
-  {{- with .Values.commonAnnotations }}
-  annotations:
-    {{- toYaml . | nindent 4 }}
   {{- end }}
-data:
   settings.yml: |
     {{- include "searxng.settingsHeader" . | nindent 4 }}
     {{- include "searxng.settingsYaml" . | nindent 4 }}
-{{- end }}

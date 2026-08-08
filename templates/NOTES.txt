@@ -152,7 +152,9 @@ Things worth checking
 {{- end }}
 {{- if include "searxng.metricsEnabled" . }}
 
-[metrics] searxng.metrics.enabled moved settings.yml from a ConfigMap into
-  Secret/{{ include "searxng.settingsObjectName" . }}, because general.open_metrics is a
-  password and upstream has no env-var override for it.
+[metrics] The /metrics basic-auth password was written to
+  Secret/{{ include "searxng.settingsObjectName" . }} as open-metrics-password, and into
+  general.open_metrics inside settings.yml. Read it with:
+    kubectl -n {{ .Release.Namespace }} get secret {{ include "searxng.settingsObjectName" . }} \
+      -o jsonpath='{.data.open-metrics-password}' | base64 -d
 {{- end }}

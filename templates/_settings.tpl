@@ -1,6 +1,5 @@
 {{/*
-Body of settings.yml. Shared by the ConfigMap and Secret variants so the two
-cannot drift.
+Body of settings.yml. Rendered into the settings Secret.
 */}}
 {{- define "searxng.settingsYaml" -}}
 {{- $settings := deepCopy .Values.searxng.settings -}}
@@ -28,13 +27,16 @@ cannot drift.
 {{/* Header comment explaining what the chart injected. */}}
 {{- define "searxng.settingsHeader" -}}
 # Managed by Helm — do not edit in place.
+# This file is rendered into a Secret, never a ConfigMap: engine tokens,
+# per-engine api_key fields and proxy credentials have no env-var override
+# upstream and can only live here.
 # secret_key comes from $SEARXNG_SECRET, valkey.url from $SEARXNG_VALKEY_URL.
 {{- if .Values.mcpRelay.enabled }}
 # `json` was added to search.formats automatically because mcpRelay is
 # enabled; the relay cannot read results without it.
 {{- end }}
 {{- if .Values.searxng.metrics.enabled }}
-# general.open_metrics holds the /metrics basic-auth password, which is why
-# this file is a Secret rather than a ConfigMap.
+# general.open_metrics was injected from searxng.metrics.password; it is the
+# HTTP Basic password for /metrics.
 {{- end }}
 {{- end -}}

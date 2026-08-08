@@ -5,7 +5,7 @@
 | `gen-secrets.sh` | Generates all Secrets with real random credentials. Prints to stdout. |
 | `secrets.example.yaml` | The same Secrets as annotated placeholders, if you would rather fill them in by hand. |
 | `values-minimal.yaml` | Smallest working install; chart manages the credentials. |
-| `values-config.yaml` | The ConfigMap side — settings.yml, custom engines, limiter.toml, extra files. |
+| `values-config.yaml` | The config-file side — settings.yml, custom engines, limiter.toml, extra files. |
 | `values-production.yaml` | Everything on, all credentials from Secrets you manage. GitOps-safe. |
 
 ## Quick start
@@ -48,17 +48,22 @@ same Secret, so your Secret has to carry `valkey.conf` (and
 password. That is the cost of keeping `requirepass` out of the process list
 rather than passing it as a CLI flag. `gen-secrets.sh` handles it.
 
-## ConfigMaps
+## Config files
 
 There is no bring-your-own-ConfigMap path. The chart renders them from values
 so the settings file cannot drift out of sync with the environment variables
 it injects alongside it:
 
-| Object | Source |
-| --- | --- |
-| `<release>-searxng-settings` | `searxng.settings` — a ConfigMap, or a Secret if `searxng.metrics.enabled` |
-| `<release>-searxng-limiter` | `searxng.limiter`, only when the limiter is on |
-| `<release>-searxng-extra` | `searxng.extraConfigFiles` |
+| Object | Kind | Source |
+| --- | --- | --- |
+| `<release>-searxng-settings` | Secret | `searxng.settings` |
+| `<release>-searxng-limiter` | ConfigMap | `searxng.limiter`, only when the limiter is on |
+| `<release>-searxng-extra` | ConfigMap | `searxng.extraConfigFiles` |
+
+`settings.yml` is a Secret unconditionally — engine `tokens`, per-engine
+`api_key` fields and `outgoing.proxies` credentials have no env-var override
+upstream and can only live in that file. Do not put credentials in
+`extraConfigFiles`; that one is still a ConfigMap.
 
 See `values-config.yaml`. To preview exactly what you will get:
 

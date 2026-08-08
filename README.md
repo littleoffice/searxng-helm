@@ -5,7 +5,8 @@ four constraints:
 
 - **No init containers.** Anywhere.
 - **Rootless**, with a read-only root filesystem and all capabilities dropped.
-- **Secrets stay secrets** — never in a ConfigMap, never in an argv.
+- **Secrets stay secrets** — settings.yml is a Secret, never a ConfigMap, and no
+  credential is ever passed in an argv.
 - **NetworkPolicies** that deny by default in both directions.
 
 Owes its shape to [kubitodev/searxng](https://github.com/kubitodev/helm), which
@@ -65,7 +66,7 @@ default IngressClass". Set it if you run more than one controller.
 ## How the "no init container" requirement is met
 
 Most SearXNG charts use an init container because the image's entrypoint wants to
-write `settings.yml`, which fails against a read-only ConfigMap mount. Reading
+write `settings.yml`, which fails against a read-only projected mount. Reading
 [`container/entrypoint.sh`](https://github.com/searxng/searxng/blob/master/container/entrypoint.sh)
 shows that isn't actually necessary:
 
@@ -74,7 +75,7 @@ shows that isn't actually necessary:
 - `setup_ownership()` chowns only when `FORCE_OWNERSHIP=true` **and** `id -u` is
   0. As a non-root user it prints a warning and carries on.
 
-So the chart mounts `settings.yml` from a ConfigMap, gives the container
+So the chart mounts `settings.yml` from a Secret, gives the container
 `emptyDir`s for `/var/cache/searxng` and `/tmp`, and runs with
 `readOnlyRootFilesystem: true`.
 
@@ -176,7 +177,7 @@ searxng:
 
 ### settings.yml
 
-`searxng.settings` is a structured dict rendered straight into the ConfigMap, so
+`searxng.settings` is a structured dict rendered straight into the Secret, so
 anything from the [settings reference](https://docs.searxng.org/admin/settings/)
 works:
 
@@ -187,6 +188,44 @@ searxng:
       safe_search: 1
       formats: [html, json]
 ```
+
+### settings.yml is a Secret
+
+Not a ConfigMap, in every configuration. SearXNG resolves environment variables
+for a fixed allowlist of settings only — `SEARXNG_SECRET`, `SEARXNG_VALKEY_URL`,
+`SEARXNG_BASE_URL`, `SEARXNG_PORT`, `SEARXNG_BIND_ADDRESS`, `SEARXNG_LIMITER`,
+`SEARXNG_PUBLIC_INSTANCE`, `SEARXNG_IMAGE_PROXY`, `SEARXNG_METHOD`,
+`SEARXNG_DEBUG` — and several things that are unambiguously credentials are not
+on it and will not be joining it:
+
+| In settings.yml | What it is |
+| --- | --- |
+| `engines[].tokens` | Token list gating a [private engine](https://docs.searxng.org/admin/engines/settings.html) |
+| `engines[].api_key`, `.password`, `.token` | Per-engine upstream credentials |
+| `outgoing.proxies` | Can carry inline `user:pass@` credentials |
+| `general.open_metrics` | HTTP Basic password for `/metrics` |
+
+Since these can only live in the file, the file is a Secret. The container
+mounts only the `settings.yml` key, at the same path and with the same content
+it always had.
+
+Two things this does **not** solve:
+
+- **The values file still holds the plaintext.** A Secret in the cluster does
+  not help if `values.yaml` is committed to git. Keep engine credentials in a
+  values file you hold outside the repo, or in SOPS / sealed-secrets.
+- **`searxng.extraConfigFiles` is still a ConfigMap.** Do not put credentials
+  in it.
+
+`kubectl describe` no longer shows the rendered config. To read it back:
+
+```console
+kubectl -n <ns> get secret <release>-searxng-settings \
+  -o jsonpath='{.data.settings\.yml}' | base64 -d
+```
+
+`helm diff` redacts Secret contents by default; pass `--show-secrets` if you
+need to see what a change does to this file.
 
 ### Custom / additional search providers
 
@@ -525,12 +564,13 @@ metrics:
 
 Three things worth knowing:
 
-**SearXNG's metrics password forces settings.yml into a Secret.** Upstream gates
-`/metrics` on `general.open_metrics` and provides no environment-variable
-override for it, so the password can only be supplied through the settings
-file. Rather than write a credential into a ConfigMap, enabling
-`searxng.metrics.enabled` renders settings.yml as a Secret instead — same mount
-path, same content. Turn it off and the ConfigMap returns.
+**The metrics password lives in settings.yml.** Upstream gates `/metrics` on
+`general.open_metrics` and provides no environment-variable override for it, so
+the password can only be supplied through the settings file. That file is a
+Secret in all cases (see [settings.yml is a Secret](#settingsyml-is-a-secret)),
+so enabling `searxng.metrics.enabled` changes nothing about where it is stored —
+it only adds `open-metrics-username` / `open-metrics-password` keys alongside
+`settings.yml` for the ServiceMonitor's `basicAuth` to reference.
 
 **The relay scrape uses its own identity, in its own Secret.** Enabling
 `mcpRelay.metrics.enabled` appends a `prometheus` identity to the relay's token
