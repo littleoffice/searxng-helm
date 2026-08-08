@@ -60,22 +60,77 @@ app.kubernetes.io/component: server
 {{/* Images                                                              */}}
 {{/* ------------------------------------------------------------------ */}}
 
-{{- define "searxng.image" -}}
-{{- $registry := .Values.image.registry | default "docker.io" -}}
-{{- if .Values.image.digest -}}
-{{- printf "%s/%s@%s" $registry .Values.image.repository .Values.image.digest -}}
+{{/*
+One image reference, built one way, for every image in the chart.
+
+Every workload here is pinned the same way and reads the same three keys, so
+the construction lives in one place rather than being spelled out per call
+site. The test pod used to interpolate `registry/repository:tag` inline, which
+is how it ended up as the only image in the chart that could not be pinned by
+digest at all.
+
+Digest wins over tag when both are set — that is the ordering the image blocks
+already document. `defaultTag` is the per-image fallback for when neither is
+given; only the SearXNG image has a meaningful one (.Chart.AppVersion), and the
+rest pass nothing, so a missing pin fails at render rather than resolving to
+something arbitrary.
+
+Call with:
+  (dict "name" "<values path>" "img" <the image map> "registry" "<default>" "tag" "<default>")
+*/}}
+{{- define "searxng.imageRef" -}}
+{{- $img := .img -}}
+{{- $registry := $img.registry | default .registry -}}
+{{- $ref := $img.repository -}}
+{{- if $registry -}}
+{{- $ref = printf "%s/%s" $registry $img.repository -}}
+{{- end -}}
+{{- if $img.digest -}}
+{{- printf "%s@%s" $ref $img.digest -}}
 {{- else -}}
-{{- printf "%s/%s:%s" $registry .Values.image.repository (.Values.image.tag | default .Chart.AppVersion) -}}
+{{- $tag := $img.tag | default .tag -}}
+{{- if not $tag -}}
+{{- fail (printf "%s: neither .digest nor .tag is set, and there is no default for this image. Pin it." .name) -}}
+{{- end -}}
+{{- printf "%s:%s" $ref $tag -}}
 {{- end -}}
 {{- end -}}
 
-{{- define "searxng.valkey.image" -}}
-{{- $registry := .Values.valkey.image.registry | default "docker.io" -}}
-{{- if .Values.valkey.image.digest -}}
-{{- printf "%s/%s@%s" $registry .Values.valkey.image.repository .Values.valkey.image.digest -}}
-{{- else -}}
-{{- printf "%s/%s:%s" $registry .Values.valkey.image.repository .Values.valkey.image.tag -}}
+{{/*
+Reject a malformed digest at render time. A typo in a 64-character hex string
+is otherwise invisible until a pod sits in ImagePullBackOff with an error that
+names the image but not the values key that produced it.
+*/}}
+{{- define "searxng.validateImages" -}}
+{{- $images := list
+      (dict "name" "image" "img" .Values.image)
+      (dict "name" "tests.image" "img" .Values.tests.image) -}}
+{{- if .Values.valkey.enabled -}}
+{{- $images = append $images (dict "name" "valkey.image" "img" .Values.valkey.image) -}}
+{{- if .Values.valkey.metrics.enabled -}}
+{{- $images = append $images (dict "name" "valkey.metrics.image" "img" .Values.valkey.metrics.image) -}}
 {{- end -}}
+{{- end -}}
+{{- if .Values.mcpRelay.enabled -}}
+{{- $images = append $images (dict "name" "mcpRelay.image" "img" .Values.mcpRelay.image) -}}
+{{- end -}}
+{{- range $images -}}
+{{/* Bind the name before `with` rebinds the dot to the digest string. */}}
+{{- $key := .name -}}
+{{- with .img.digest -}}
+{{- if not (regexMatch "^sha256:[0-9a-f]{64}$" .) -}}
+{{- fail (printf "%s.digest is not a well-formed digest (%q). Expected \"sha256:\" followed by 64 lowercase hex characters." $key .) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{- define "searxng.image" -}}
+{{- include "searxng.imageRef" (dict "name" "image" "img" .Values.image "registry" "docker.io" "tag" .Chart.AppVersion) -}}
+{{- end -}}
+
+{{- define "searxng.valkey.image" -}}
+{{- include "searxng.imageRef" (dict "name" "valkey.image" "img" .Values.valkey.image "registry" "docker.io") -}}
 {{- end -}}
 
 {{/* ------------------------------------------------------------------ */}}
@@ -236,6 +291,7 @@ Guard rails: fail loudly rather than silently doing something insecure or
 producing a pod that cannot start.
 */}}
 {{- define "searxng.validate" -}}
+{{- include "searxng.validateImages" . -}}
 {{- if and .Values.searxng.baseUrl (regexMatch "\\$\\(" .Values.searxng.baseUrl) }}
 {{- fail (printf "searxng.baseUrl contains a $(...) reference (%q). This gets expanded by Kubernetes and corrupts the URL. Use a literal base URL such as https://search.example.com/ with no port variable." .Values.searxng.baseUrl) }}
 {{- end }}
@@ -290,12 +346,12 @@ app.kubernetes.io/component: mcp-relay
 {{- end -}}
 
 {{- define "searxng.relay.image" -}}
-{{- $registry := .Values.mcpRelay.image.registry | default "ghcr.io" -}}
-{{- if .Values.mcpRelay.image.digest -}}
-{{- printf "%s/%s@%s" $registry .Values.mcpRelay.image.repository .Values.mcpRelay.image.digest -}}
-{{- else -}}
-{{- printf "%s/%s:%s" $registry .Values.mcpRelay.image.repository .Values.mcpRelay.image.tag -}}
+{{- include "searxng.imageRef" (dict "name" "mcpRelay.image" "img" .Values.mcpRelay.image "registry" "ghcr.io") -}}
 {{- end -}}
+
+{{/* The helm test pod. Same three keys, same helper as every other image. */}}
+{{- define "searxng.tests.image" -}}
+{{- include "searxng.imageRef" (dict "name" "tests.image" "img" .Values.tests.image "registry" "docker.io") -}}
 {{- end -}}
 
 {{- define "searxng.relay.serviceAccountName" -}}
@@ -570,12 +626,7 @@ app.kubernetes.io/component: valkey-replica
 {{- end -}}
 
 {{- define "searxng.valkey.exporterImage" -}}
-{{- $i := .Values.valkey.metrics.image -}}
-{{- if $i.digest -}}
-{{- printf "%s/%s@%s" ($i.registry | default "docker.io") $i.repository $i.digest -}}
-{{- else -}}
-{{- printf "%s/%s:%s" ($i.registry | default "docker.io") $i.repository $i.tag -}}
-{{- end -}}
+{{- include "searxng.imageRef" (dict "name" "valkey.metrics.image" "img" .Values.valkey.metrics.image "registry" "docker.io") -}}
 {{- end -}}
 
 {{/* ------------------------------------------------------------------ */}}

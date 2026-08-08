@@ -26,7 +26,7 @@ image:
   # Falls back to .Chart.AppVersion when empty. Pin this.
   tag: ""
   # If set, takes precedence over `tag`. e.g. "sha256:abc123..."
-  digest: ""
+  digest: "sha256:f4c8e59de166ed71f6380c0847c312ca51f0d41996e31d0559163b6b09ecde52"
   pullPolicy: IfNotPresent
 
 imagePullSecrets: []
@@ -410,8 +410,8 @@ valkey:
     image:
       registry: docker.io
       repository: oliver006/redis_exporter
-      tag: "v1.67.0"
-      digest: ""
+      tag: ""
+      digest: "sha256:db6df2026585151c2209aa1f21c8856da883cf933b0943c0e51d1f4b3acf1a8d"
       pullPolicy: IfNotPresent
     port: 9121
     resources:
@@ -434,10 +434,10 @@ valkey:
         type: RuntimeDefault
 
   image:
-    registry: docker.io
-    repository: valkey/valkey
-    tag: "9-alpine"
-    digest: ""
+    registry: cgr.dev
+    repository: chainguard/valkey
+    tag: ""
+    digest: "sha256:144c32eb89666b50d973fd3f84fad8308483c1d77b154c3c3e877f3bc43e3c00"
     pullPolicy: IfNotPresent
 
   # Password is generated and stored in a Secret, then rendered into
@@ -591,9 +591,10 @@ networkPolicy:
 tests:
   enabled: true
   image:
-    registry: docker.io
-    repository: curlimages/curl
-    tag: "8.11.1"
+    registry: cgr.io
+    repository: chainguard/curl
+    tag: ""
+    digest: "sha256:dc57926eb647d285cc1158653362b74a5603413aaf7984774e2d2834e6ecf9c2"
 
 # -----------------------------------------------------------------------------
 # MCP relay — littleoffice/mcp-searxng-relay
@@ -611,8 +612,8 @@ mcpRelay:
     registry: ghcr.io
     repository: littleoffice/mcp-searxng-relay
     # Upstream publishes vX.Y.Z tags plus `latest`. Pin a version.
-    tag: "latest"
-    digest: ""
+    tag: ""
+    digest: "sha256:96c8f7a61e722f391ef536bd716a71abbe24ff987989a9fe85f3fd7ddfb28046"
     pullPolicy: IfNotPresent
 
   # Sessions live in memory. With >1 replica a client's session ID is only
