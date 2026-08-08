@@ -1,0 +1,34 @@
+apiVersion: v2
+name: searxng
+description: |
+  Hardened SearXNG metasearch engine for Kubernetes. Rootless, read-only root
+  filesystem, no init containers, NetworkPolicies, Secret-backed credentials and
+  an optional Valkey cache.
+type: application
+
+# Chart version. Bump on every change to the chart itself.
+version: 1.4.0
+
+# Default container image tag when `image.tag` is empty.
+# NOTE: "latest" is a convenience only. Pin an immutable tag (e.g. 2026.7.22-ef8f6470e)
+# or, better, an image digest via `image.digest` for production.
+appVersion: "latest"
+
+kubeVersion: ">=1.25.0-0"
+
+home: https://docs.searxng.org
+icon: https://raw.githubusercontent.com/searxng/searxng/master/searx/static/themes/simple/img/favicon.png
+sources:
+  - https://github.com/searxng/searxng
+  - https://docs.searxng.org
+
+keywords:
+  - searxng
+  - metasearch
+  - search-engine
+  - privacy
+  - valkey
+
+annotations:
+  category: Analytics
+  licenses: AGPL-3.0-or-later

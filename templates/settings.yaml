@@ -1,0 +1,40 @@
+{{- include "searxng.validate" . -}}
+{{- include "searxng.relay.validate" . -}}
+{{- include "searxng.assertNonRootAll" . -}}
+{{- if include "searxng.metricsEnabled" . }}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ include "searxng.settingsObjectName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "searxng.serverLabels" . | nindent 4 }}
+  {{- with .Values.commonAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+type: Opaque
+stringData:
+  # Consumed by the ServiceMonitor's basicAuth.
+  open-metrics-username: {{ .Values.searxng.metrics.username | quote }}
+  open-metrics-password: {{ include "searxng.openMetricsPassword" . | quote }}
+  settings.yml: |
+    {{- include "searxng.settingsHeader" . | nindent 4 }}
+    {{- include "searxng.settingsYaml" . | nindent 4 }}
+{{- else }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "searxng.settingsObjectName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "searxng.serverLabels" . | nindent 4 }}
+  {{- with .Values.commonAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+data:
+  settings.yml: |
+    {{- include "searxng.settingsHeader" . | nindent 4 }}
+    {{- include "searxng.settingsYaml" . | nindent 4 }}
+{{- end }}

@@ -1,0 +1,58 @@
+{{- if .Values.valkey.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "searxng.valkey.primaryName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "searxng.valkey.primaryLabels" . | nindent 4 }}
+  {{- with .Values.commonAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  # Headless: also the StatefulSet's governing service.
+  clusterIP: None
+  ports:
+    - name: valkey
+      port: 6379
+      targetPort: valkey
+      protocol: TCP
+    {{- if .Values.valkey.metrics.enabled }}
+    - name: metrics
+      port: {{ .Values.valkey.metrics.port }}
+      targetPort: metrics
+      protocol: TCP
+    {{- end }}
+  selector:
+    {{- include "searxng.valkey.primarySelectorLabels" . | nindent 4 }}
+{{- if include "searxng.valkey.replicationEnabled" . }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "searxng.valkey.replicaName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "searxng.valkey.replicaLabels" . | nindent 4 }}
+  {{- with .Values.commonAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  clusterIP: None
+  ports:
+    - name: valkey
+      port: 6379
+      targetPort: valkey
+      protocol: TCP
+    {{- if .Values.valkey.metrics.enabled }}
+    - name: metrics
+      port: {{ .Values.valkey.metrics.port }}
+      targetPort: metrics
+      protocol: TCP
+    {{- end }}
+  selector:
+    {{- include "searxng.valkey.replicaSelectorLabels" . | nindent 4 }}
+{{- end }}
+{{- end }}

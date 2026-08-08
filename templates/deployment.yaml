@@ -1,0 +1,226 @@
+{{- include "searxng.validate" . -}}
+{{- include "searxng.assertNonRootAll" . -}}
+{{- $port := (.Values.searxng.settings.server).port | default 8080 -}}
+{{- $baseUrl := include "searxng.baseUrl" . -}}
+{{- $limiter := include "searxng.limiterEnabled" . -}}
+{{- $valkeyHost := include "searxng.valkey.host" . -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "searxng.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "searxng.serverLabels" . | nindent 4 }}
+  {{- with .Values.commonAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  revisionHistoryLimit: {{ .Values.revisionHistoryLimit }}
+  strategy:
+    {{- toYaml .Values.updateStrategy | nindent 4 }}
+  selector:
+    matchLabels:
+      {{- include "searxng.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        # ConfigMaps are mounted with subPath, which never live-reloads, and
+        # SearXNG only reads its config at boot. Roll the pods on change.
+        checksum/config: {{ include (print $.Template.BasePath "/settings.yaml") . | sha256sum }}
+        {{- if $limiter }}
+        checksum/limiter: {{ include (print $.Template.BasePath "/configmap-limiter.yaml") . | sha256sum }}
+        {{- end }}
+        {{- if .Values.searxng.extraConfigFiles }}
+        checksum/extra-config: {{ include (print $.Template.BasePath "/configmap-extra.yaml") . | sha256sum }}
+        {{- end }}
+        {{- with .Values.commonAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "searxng.serverLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "searxng.serviceAccountName" . }}
+      automountServiceAccountToken: {{ .Values.serviceAccount.automountServiceAccountToken }}
+      enableServiceLinks: {{ .Values.enableServiceLinks }}
+      {{- if .Values.userNamespaces.enabled }}
+      hostUsers: false
+      {{- end }}
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      {{- with .Values.priorityClassName }}
+      priorityClassName: {{ . | quote }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: searxng
+          image: {{ include "searxng.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          env:
+            # The entrypoint only chowns when running as root; setting this to
+            # false makes the intent explicit and skips the attempt entirely.
+            - name: FORCE_OWNERSHIP
+              value: "false"
+            - name: GRANIAN_HOST
+              value: {{ .Values.searxng.bindAddress | quote }}
+            # Set GRANIAN_PORT directly rather than SEARXNG_PORT: the image
+            # aliases SEARXNG_PORT -> GRANIAN_PORT, but exposing SEARXNG_PORT as
+            # an env var means a $(SEARXNG_PORT) in any *later* var (e.g. a
+            # base URL) gets expanded by Kubernetes. Not declaring it removes
+            # that foot-gun entirely.
+            - name: GRANIAN_PORT
+              value: {{ $port | quote }}
+            {{- if $baseUrl }}
+            # Escape any literal $ so Kubernetes never performs $(VAR)
+            # expansion on a user-supplied URL.
+            - name: SEARXNG_BASE_URL
+              value: {{ $baseUrl | replace "$" "$$" | quote }}
+            {{- end }}
+            # Overrides server.secret_key from settings.yml at runtime.
+            - name: SEARXNG_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "searxng.secretName" . }}
+                  key: {{ include "searxng.secretKeyRefKey" . }}
+            {{- if .Values.valkey.enabled }}
+            {{- if .Values.valkey.auth.enabled }}
+            - name: VALKEY_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "searxng.valkey.secretName" . }}
+                  key: {{ include "searxng.valkey.secretPasswordKey" . }}
+            # Kubernetes expands $(VAR) against env vars declared above it, so
+            # the password is assembled in-pod and never lands in a ConfigMap.
+            - name: SEARXNG_VALKEY_URL
+              value: "valkey://:$(VALKEY_PASSWORD)@{{ $valkeyHost }}:6379/0"
+            {{- else }}
+            - name: SEARXNG_VALKEY_URL
+              value: "valkey://{{ $valkeyHost }}:6379/0"
+            {{- end }}
+            {{- else if .Values.valkey.external.existingSecret }}
+            - name: SEARXNG_VALKEY_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.valkey.external.existingSecret }}
+                  key: {{ .Values.valkey.external.existingSecretUrlKey }}
+            {{- else if .Values.valkey.external.url }}
+            - name: SEARXNG_VALKEY_URL
+              value: {{ .Values.valkey.external.url | quote }}
+            {{- end }}
+            {{- with .Values.searxng.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          ports:
+            - name: http
+              containerPort: {{ $port | int }}
+              protocol: TCP
+          {{- with .Values.startupProbe }}
+          startupProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.livenessProbe }}
+          livenessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.readinessProbe }}
+          readinessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: settings
+              mountPath: /etc/searxng/settings.yml
+              subPath: settings.yml
+              readOnly: true
+            {{- if $limiter }}
+            - name: limiter
+              mountPath: /etc/searxng/limiter.toml
+              subPath: limiter.toml
+              readOnly: true
+            {{- end }}
+            {{- range $name, $_ := .Values.searxng.extraConfigFiles }}
+            - name: extra-config
+              mountPath: /etc/searxng/{{ $name }}
+              subPath: {{ $name }}
+              readOnly: true
+            {{- end }}
+            # Writable scratch — required by readOnlyRootFilesystem.
+            - name: cache
+              mountPath: /var/cache/searxng
+            - name: tmp
+              mountPath: /tmp
+            {{- with .Values.searxng.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+      volumes:
+        - name: settings
+          {{- if include "searxng.metricsEnabled" . }}
+          # A Secret, not a ConfigMap: general.open_metrics is a credential.
+          secret:
+            secretName: {{ include "searxng.settingsObjectName" . }}
+            defaultMode: 0440
+            items:
+              - key: settings.yml
+                path: settings.yml
+          {{- else }}
+          configMap:
+            name: {{ include "searxng.settingsObjectName" . }}
+            defaultMode: 0444
+          {{- end }}
+        {{- if $limiter }}
+        - name: limiter
+          configMap:
+            name: {{ include "searxng.fullname" . }}-limiter
+            defaultMode: 0444
+        {{- end }}
+        {{- if .Values.searxng.extraConfigFiles }}
+        - name: extra-config
+          configMap:
+            name: {{ include "searxng.fullname" . }}-extra
+            defaultMode: 0444
+        {{- end }}
+        - name: cache
+          emptyDir:
+            {{- with .Values.emptyDirs.cache.medium }}
+            medium: {{ . | quote }}
+            {{- end }}
+            sizeLimit: {{ .Values.emptyDirs.cache.sizeLimit }}
+        - name: tmp
+          emptyDir:
+            {{- with .Values.emptyDirs.tmp.medium }}
+            medium: {{ . | quote }}
+            {{- end }}
+            sizeLimit: {{ .Values.emptyDirs.tmp.sizeLimit }}
+        {{- with .Values.searxng.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- if .Values.topologySpreadConstraints }}
+      {{- $defaultSelector := dict "labelSelector" (dict "matchLabels" (include "searxng.selectorLabels" $ | fromYaml)) }}
+      topologySpreadConstraints:
+        {{- range .Values.topologySpreadConstraints }}
+        # A constraint without its own labelSelector gets this release's.
+        - {{ toYaml (merge (dict) . $defaultSelector) | nindent 10 | trim }}
+        {{- end }}
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

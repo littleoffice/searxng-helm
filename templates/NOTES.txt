@@ -1,0 +1,158 @@
+SearXNG {{ .Chart.AppVersion }} — release {{ .Release.Name }} in namespace {{ .Release.Namespace }}.
+
+Reach it with:
+
+{{- if .Values.ingress.enabled }}
+{{- range .Values.ingress.hosts }}
+{{- $host := .host }}
+{{- range .paths }}
+  http{{ if $.Values.ingress.tls }}s{{ end }}://{{ $host }}{{ .path }}
+{{- end }}
+{{- end }}
+{{- else }}
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "searxng.fullname" . }} 8080:{{ .Values.service.port }}
+  # then open http://localhost:8080
+{{- end }}
+
+Verify the deployment:
+
+  helm test {{ .Release.Name }} -n {{ .Release.Namespace }}
+
+--------------------------------------------------------------------------------
+Things worth checking
+--------------------------------------------------------------------------------
+{{- if .Values.networkPolicy.enabled }}
+
+[NetworkPolicy] Enabled. Ingress to :{{ (.Values.searxng.settings.server).port | default 8080 }} is allowed from:
+{{- if .Values.networkPolicy.ingress.allowSameNamespace }}
+  - any pod in namespace {{ .Release.Namespace }}
+{{- end }}
+{{- range .Values.networkPolicy.ingress.fromNamespaces }}
+  - namespace {{ . }}
+{{- end }}
+{{- range .Values.networkPolicy.ingress.from }}
+  - {{ toJson . }}
+{{- end }}
+{{- if and .Values.ingress.enabled (not .Values.networkPolicy.ingress.fromNamespaces) (not .Values.networkPolicy.ingress.from) }}
+
+  >> You enabled the Ingress but named no source namespace. If your ingress
+  >> controller runs outside {{ .Release.Namespace }}, every request will time
+  >> out. Find it and add its namespace:
+  >>   kubectl get pods -A -l app.kubernetes.io/component=controller
+  >>   --set networkPolicy.ingress.fromNamespaces={<namespace>}
+{{- end }}
+{{- else }}
+
+[NetworkPolicy] DISABLED. Nothing restricts traffic to or from these pods.
+{{- end }}
+{{- if and .Values.networkPolicy.enabled (not .Values.valkey.enabled) (or .Values.valkey.external.url .Values.valkey.external.existingSecret) }}
+
+[valkey/netpol] You are using an external Valkey but egress rules are only
+  generated for the bundled one, and the internet rule excludes private ranges.
+  Add a rule under networkPolicy.egress.extra pointing at it, e.g.:
+    - to:
+        - ipBlock: {cidr: 10.1.2.3/32}
+      ports:
+        - {port: 6379, protocol: TCP}
+{{- end }}
+{{- if and (not .Values.searxng.existingSecret) (not .Values.searxng.secretKey) }}
+
+[secret_key] Auto-generated and stored in Secret/{{ include "searxng.fullname" . }}.
+  It is preserved across `helm upgrade` by reading it back from the cluster.
+  Argo CD and Flux render with `helm template`, where that read returns nothing
+  and the key would be regenerated on every sync, invalidating user sessions.
+  If you deploy via GitOps, create the Secret yourself and set:
+    searxng.existingSecret: <name>
+{{- end }}
+{{- if include "searxng.limiterEnabled" . }}
+
+[limiter] Enabled. It attributes requests to the client IP taken from
+  X-Forwarded-For, but only when the immediate peer is in
+  searxng.limiter.trustedProxies. If that list does not cover your ingress
+  controller's pod network, every request looks like one client and the whole
+  instance rate-limits itself.
+{{- end }}
+{{- if not (include "searxng.baseUrl" .) }}
+
+[base_url] Not set. Generated absolute URLs (OpenSearch, RSS, image proxy) may
+  be wrong behind a proxy. Set searxng.baseUrl or enable the ingress.
+{{- end }}
+{{- if eq (.Values.image.tag | default .Chart.AppVersion) "latest" }}
+
+[image] Running the `latest` tag. Pin image.tag or image.digest before you rely
+  on this in production.
+{{- end }}
+{{- if and .Values.valkey.enabled (not .Values.valkey.auth.enabled) }}
+
+[valkey] Auth is disabled and protected-mode is off. Anything that can reach
+  the pod on :6379 has full access. Only reasonable with a NetworkPolicy.
+{{- end }}
+{{- if and .Values.valkey.enabled .Values.valkey.persistence.enabled }}
+
+[valkey] Persistence is on. Switching it off later will not delete the PVC —
+  remove it manually if you no longer want it.
+{{- end }}
+
+{{- if .Values.mcpRelay.enabled }}
+
+[MCP relay] Enabled at http://{{ include "searxng.relay.fullname" . }}.{{ .Release.Namespace }}.svc:{{ .Values.mcpRelay.service.port }}/
+  `json` has been added to search.formats automatically — the relay needs it.
+  Read a bearer token for a client with:
+    kubectl -n {{ .Release.Namespace }} get secret {{ include "searxng.relay.secretName" . }} \
+      -o jsonpath='{.data.{{ include "searxng.relay.secretKey" . }}}' | base64 -d
+{{- if not .Values.mcpRelay.ingress.enabled }}
+  No ingress for it, so it is cluster-internal only. Port-forward to try it:
+    kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "searxng.relay.fullname" . }} 8080:{{ .Values.mcpRelay.service.port }}
+{{- else if not .Values.mcpRelay.ingress.tls }}
+
+  >> The relay ingress has no TLS block. Bearer tokens would cross the network
+  >> in clear text. Add mcpRelay.ingress.tls before exposing this.
+{{- end }}
+{{- if gt (int .Values.mcpRelay.replicaCount) 1 }}
+{{- if not .Values.mcpRelay.stateless }}
+
+  >> replicaCount > 1 with stateless=false. MCP sessions live in each pod's
+  >> memory, so a client's session ID is only valid on the pod that issued it.
+  >> Set mcpRelay.stateless=true, or add session affinity at the ingress.
+{{- end }}
+{{- end }}
+{{- end }}
+
+{{- if include "searxng.valkey.replicationEnabled" . }}
+
+[valkey] Replication: 1 primary + {{ .Values.valkey.replica.count }} replica(s).
+  SearXNG writes to {{ include "searxng.valkey.primaryHost" . }} and has NO
+  failover — its client takes a single URL and does not speak Sentinel. If the
+  primary is lost you promote a replica by hand:
+    kubectl -n {{ .Release.Namespace }} exec {{ include "searxng.valkey.replicaName" . }}-0 -c valkey -- valkey-cli replicaof no one
+  and repoint the primary Service, or restore the primary and let replicas
+  resync. Treat the replicas as redundancy and read capacity, not as HA.
+{{- end }}
+{{- if .Values.metrics.serviceMonitor.enabled }}
+
+[metrics] ServiceMonitors created in {{ .Values.metrics.serviceMonitor.namespace | default .Release.Namespace }} for:
+{{- if include "searxng.metricsEnabled" . }}
+  - searxng      /metrics, OpenMetrics, basic auth
+{{- end }}
+{{- if and .Values.mcpRelay.enabled .Values.mcpRelay.metrics.enabled }}
+  - mcp-relay    /metrics, Prometheus text, bearer auth (identity "prometheus")
+{{- end }}
+{{- if and .Values.valkey.enabled .Values.valkey.metrics.enabled }}
+  - valkey       redis_exporter sidecar on :{{ .Values.valkey.metrics.port }}, primary and replicas
+{{- end }}
+  They carry labels {{ .Values.metrics.serviceMonitor.labels | toJson }} — these must match your
+  Prometheus serviceMonitorSelector or nothing gets scraped.
+{{- if and .Values.networkPolicy.enabled (not .Values.metrics.allowScrapeFromNamespaces) }}
+
+  >> NetworkPolicy is on but metrics.allowScrapeFromNamespaces is empty, so
+  >> Prometheus is blocked unless it runs in {{ .Release.Namespace }}. Add its
+  >> namespace:
+  >>   --set metrics.allowScrapeFromNamespaces={monitoring}
+{{- end }}
+{{- end }}
+{{- if include "searxng.metricsEnabled" . }}
+
+[metrics] searxng.metrics.enabled moved settings.yml from a ConfigMap into
+  Secret/{{ include "searxng.settingsObjectName" . }}, because general.open_metrics is a
+  password and upstream has no env-var override for it.
+{{- end }}

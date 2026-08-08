@@ -1,0 +1,18 @@
+# Smallest thing that works. Chart generates and maintains every credential.
+# Not GitOps-safe — see values-production.yaml for that.
+#
+#   helm install searxng ./searxng -n search --create-namespace \
+#     -f examples/values-minimal.yaml
+
+image:
+  tag: "2026.7.22-ef8f6470e"    # pin something real; check the upstream tags
+
+replicaCount: 2
+
+# Everything in the release namespace can reach it; nothing else can.
+# Add your ingress controller's namespace here before enabling the Ingress.
+networkPolicy:
+  enabled: true
+  ingress:
+    allowSameNamespace: true
+    fromNamespaces: []

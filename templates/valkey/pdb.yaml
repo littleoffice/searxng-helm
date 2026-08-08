@@ -1,0 +1,14 @@
+{{- if and (include "searxng.valkey.replicationEnabled" .) .Values.valkey.replica.podDisruptionBudget.enabled }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "searxng.valkey.replicaName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "searxng.valkey.replicaLabels" . | nindent 4 }}
+spec:
+  maxUnavailable: {{ .Values.valkey.replica.podDisruptionBudget.maxUnavailable }}
+  selector:
+    matchLabels:
+      {{- include "searxng.valkey.replicaSelectorLabels" . | nindent 6 }}
+{{- end }}

@@ -1,0 +1,38 @@
+{{- if and .Values.mcpRelay.enabled .Values.mcpRelay.ingress.enabled }}
+{{- $name := include "searxng.relay.fullname" . -}}
+{{- $svcPort := .Values.mcpRelay.service.port -}}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "searxng.relay.labels" . | nindent 4 }}
+  {{- with (merge (dict) .Values.mcpRelay.ingress.annotations .Values.commonAnnotations) }}
+  annotations:
+    {{- include "searxng.renderAnnotations" . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with .Values.mcpRelay.ingress.className }}
+  ingressClassName: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.mcpRelay.ingress.tls }}
+  tls:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  rules:
+    {{- range .Values.mcpRelay.ingress.hosts }}
+    - host: {{ .host | quote }}
+      http:
+        paths:
+          {{- range .paths }}
+          - path: {{ .path }}
+            pathType: {{ .pathType | default "Prefix" }}
+            backend:
+              service:
+                name: {{ $name }}
+                port:
+                  number: {{ $svcPort }}
+          {{- end }}
+    {{- end }}
+{{- end }}

@@ -1,0 +1,103 @@
+# The ConfigMap side of things.
+#
+# The chart renders these ConfigMaps for you — there is no "bring your own
+# ConfigMap" path, because the settings file has to stay in lockstep with the
+# env vars the chart injects:
+#
+#   <release>-searxng-settings   settings.yml       <- searxng.settings
+#   <release>-searxng-limiter    limiter.toml       <- searxng.limiter (limiter on)
+#   <release>-searxng-extra      arbitrary files    <- searxng.extraConfigFiles
+#
+# Inspect what you are about to get:
+#   helm template searxng ./searxng -f examples/values-config.yaml \
+#     -s templates/settings.yaml
+
+searxng:
+  baseUrl: "https://search.example.com/"
+
+  settings:
+    use_default_settings: true
+
+    general:
+      instance_name: "Example Search"
+      contact_url: false
+      donation_url: false
+      privacypolicy_url: false
+
+    server:
+      # Needs Valkey. The chart refuses to render without one.
+      limiter: true
+      public_instance: false
+      image_proxy: true
+      method: "POST"
+
+    ui:
+      static_use_hash: true
+      infinite_scroll: false
+
+    search:
+      safe_search: 1
+      autocomplete: "duckduckgo"
+      default_lang: "en"
+      formats:
+        - html
+        # mcpRelay adds `json` automatically if you enable it; listing it here
+        # too is harmless.
+
+    outgoing:
+      request_timeout: 4.0
+      max_request_timeout: 12.0
+
+    # --- custom / additional search providers ---------------------------
+    # Merged into the built-in list by `name` because use_default_settings is
+    # true. Use it to flip a shipped engine on or off, or to add your own.
+    engines:
+      # re-enable a built-in that ships disabled
+      - name: wikidata
+        disabled: false
+      # tune a built-in
+      - name: duckduckgo
+        timeout: 4.0
+      # turn one off entirely
+      - name: brave
+        disabled: true
+      # a private instance of a supported engine
+      - name: my gitea
+        engine: gitea
+        base_url: https://git.example.com
+        shortcut: gt
+        categories: [it, repos]
+        timeout: 5.0
+      # a plain JSON API via the generic engine
+      - name: internal docs
+        engine: json_engine
+        search_url: https://docs.internal.example.com/api/search?q={query}
+        results_query: results
+        url_query: url
+        title_query: title
+        content_query: excerpt
+        shortcut: doc
+        categories: [general]
+        timeout: 4.0
+
+  # --- limiter.toml -----------------------------------------------------
+  limiter:
+    # MUST cover your ingress controller's pod network or every request is
+    # attributed to one client. Narrow this to the controller's CIDR if you can.
+    trustedProxies:
+      - "127.0.0.0/8"
+      - "::1"
+      - "10.0.0.0/8"
+    passIp:
+      - "10.42.0.0/16"     # e.g. an internal subnet you never want limited
+    blockIp: []
+
+  # --- arbitrary extra files in /etc/searxng ----------------------------
+  extraConfigFiles:
+    favicons.toml: |
+      [favicons]
+      cfg_schema = 1
+
+valkey:
+  enabled: true
+  architecture: standalone

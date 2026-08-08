@@ -1,0 +1,47 @@
+{{- if include "searxng.limiterEnabled" . }}
+{{- $l := .Values.searxng.limiter }}
+{{- $server := .Values.searxng.settings.server | default dict }}
+{{- $linkToken := $server.public_instance | default false }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "searxng.fullname" . }}-limiter
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "searxng.serverLabels" . | nindent 4 }}
+  {{- with .Values.commonAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+data:
+  limiter.toml: |
+    {{- if $l.rawConfig }}
+    {{- $l.rawConfig | nindent 4 }}
+    {{- else }}
+    [botdetection]
+    ipv4_prefix = {{ $l.ipv4Prefix | int }}
+    ipv6_prefix = {{ $l.ipv6Prefix | int }}
+    trusted_proxies = [
+    {{- range $l.trustedProxies }}
+      {{ . | quote }},
+    {{- end }}
+    ]
+
+    [botdetection.ip_limit]
+    filter_link_local = {{ $l.filterLinkLocal }}
+    link_token = {{ $linkToken }}
+
+    [botdetection.ip_lists]
+    block_ip = [
+    {{- range $l.blockIp }}
+      {{ . | quote }},
+    {{- end }}
+    ]
+    pass_ip = [
+    {{- range $l.passIp }}
+      {{ . | quote }},
+    {{- end }}
+    ]
+    pass_searxng_org = {{ $l.passSearxngOrg }}
+    {{- end }}
+{{- end }}

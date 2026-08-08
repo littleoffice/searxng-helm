@@ -1,0 +1,14 @@
+{{- if and .Values.mcpRelay.enabled .Values.mcpRelay.podDisruptionBudget.enabled }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "searxng.relay.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "searxng.relay.labels" . | nindent 4 }}
+spec:
+  maxUnavailable: {{ .Values.mcpRelay.podDisruptionBudget.maxUnavailable }}
+  selector:
+    matchLabels:
+      {{- include "searxng.relay.selectorLabels" . | nindent 6 }}
+{{- end }}

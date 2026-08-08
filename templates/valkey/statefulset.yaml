@@ -1,0 +1,8 @@
+{{- if .Values.valkey.enabled }}
+{{- include "searxng.assertNonRootAll" . -}}
+{{- include "searxng.valkey.statefulset" (dict "ctx" $ "role" "primary") }}
+{{- if include "searxng.valkey.replicationEnabled" . }}
+---
+{{ include "searxng.valkey.statefulset" (dict "ctx" $ "role" "replica") }}
+{{- end }}
+{{- end }}

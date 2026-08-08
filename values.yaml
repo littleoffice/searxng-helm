@@ -1,0 +1,836 @@
+# =============================================================================
+# SearXNG — hardened Helm chart
+# =============================================================================
+# Design constraints baked into this chart:
+#   * No init containers anywhere.
+#   * Runs as UID/GID 977 (the image's `searxng` user) with a read-only rootfs.
+#   * secret_key and the Valkey password only ever live in Secrets, never in a
+#     ConfigMap and never in an argv.
+#   * NetworkPolicies default to deny; egress to the cluster's private ranges is
+#     explicitly excluded so SearXNG cannot reach internal services.
+# =============================================================================
+
+nameOverride: ""
+fullnameOverride: ""
+
+# Extra labels/annotations applied to every object this chart creates.
+commonLabels: {}
+commonAnnotations: {}
+
+# -----------------------------------------------------------------------------
+# Image
+# -----------------------------------------------------------------------------
+image:
+  registry: docker.io
+  repository: searxng/searxng
+  # Falls back to .Chart.AppVersion when empty. Pin this.
+  tag: ""
+  # If set, takes precedence over `tag`. e.g. "sha256:abc123..."
+  digest: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+# - name: my-registry-creds
+
+# -----------------------------------------------------------------------------
+# Replication / scheduling
+# -----------------------------------------------------------------------------
+replicaCount: 2
+revisionHistoryLimit: 3
+
+updateStrategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxUnavailable: 0
+    maxSurge: 1
+
+# Granian is given 30s to drain (GRANIAN_WORKERS_KILL_TIMEOUT), so allow a
+# little more than that before SIGKILL.
+terminationGracePeriodSeconds: 40
+
+podDisruptionBudget:
+  enabled: true
+  # Set exactly one of these.
+  minAvailable: ""
+  maxUnavailable: 1
+
+autoscaling:
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 6
+  targetCPUUtilizationPercentage: 75
+  targetMemoryUtilizationPercentage: ""
+  behavior: {}
+  #   scaleDown:
+  #     stabilizationWindowSeconds: 300
+
+# Spread replicas across nodes (and zones, if your nodes are labelled).
+# A constraint with no labelSelector gets this release's selector injected.
+topologySpreadConstraints:
+  - maxSkew: 1
+    topologyKey: kubernetes.io/hostname
+    whenUnsatisfiable: ScheduleAnyway
+  # - maxSkew: 1
+  #   topologyKey: topology.kubernetes.io/zone
+  #   whenUnsatisfiable: ScheduleAnyway
+
+affinity: {}
+nodeSelector: {}
+tolerations: []
+priorityClassName: ""
+
+# -----------------------------------------------------------------------------
+# Security context
+# -----------------------------------------------------------------------------
+# 977:977 is the `searxng` user baked into the official image
+# (container/dist.dockerfile: COPY --chown=977:977).
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 977
+  runAsGroup: 977
+  fsGroup: 977
+  fsGroupChangePolicy: OnRootMismatch
+  seccompProfile:
+    type: RuntimeDefault
+
+containerSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 977
+  runAsGroup: 977
+  allowPrivilegeEscalation: false
+  privileged: false
+  # Safe: the entrypoint only writes to /etc/searxng/settings.yml when that file
+  # is absent, and we always mount it. Everything else writable is an emptyDir.
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+  seccompProfile:
+    type: RuntimeDefault
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+  # SearXNG never talks to the Kubernetes API.
+  automountServiceAccountToken: false
+
+# Don't inject KUBERNETES_* / <SVC>_SERVICE_HOST env vars into the pod.
+enableServiceLinks: false
+
+# Run pods in a dedicated user namespace, so that even uid 0 *inside* a pod
+# maps to an unprivileged uid on the node. Nothing here runs as root anyway,
+# but this also remaps the root-owned files kubelet writes into ConfigMap and
+# Secret mounts to a non-root host uid.
+#
+# Requires the UserNamespacesSupport feature gate, a runtime with idmap mount
+# support (containerd >= 2.0 / CRI-O >= 1.30) and a kernel >= 6.3. Check your
+# cluster before enabling — on a cluster without support the pods will not
+# start. Off by default for that reason.
+userNamespaces:
+  enabled: false
+
+# -----------------------------------------------------------------------------
+# Resources & probes
+# -----------------------------------------------------------------------------
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    # Deliberately no CPU limit: throttling a search aggregator hurts latency
+    # far more than it helps. Add one if your policy requires it.
+    memory: 768Mi
+
+startupProbe:
+  httpGet:
+    path: /healthz
+    port: http
+  initialDelaySeconds: 5
+  periodSeconds: 5
+  failureThreshold: 24
+  timeoutSeconds: 3
+
+livenessProbe:
+  httpGet:
+    path: /healthz
+    port: http
+  periodSeconds: 20
+  failureThreshold: 3
+  timeoutSeconds: 5
+
+readinessProbe:
+  httpGet:
+    path: /healthz
+    port: http
+  periodSeconds: 10
+  failureThreshold: 3
+  timeoutSeconds: 5
+
+# Writable scratch space. Required because readOnlyRootFilesystem is true.
+emptyDirs:
+  # /var/cache/searxng — favicon cache, SQLite DBs.
+  cache:
+    sizeLimit: 1Gi
+    medium: ""
+  # /tmp — Python tempfiles.
+  tmp:
+    sizeLimit: 64Mi
+    medium: ""
+
+# -----------------------------------------------------------------------------
+# SearXNG application config
+# -----------------------------------------------------------------------------
+searxng:
+  # Public URL of the instance. Leave empty to derive it from the first
+  # ingress host (https when TLS is configured, otherwise http).
+  # Maps to $SEARXNG_BASE_URL.
+  baseUrl: ""
+
+  # Granian bind address. The image defaults to "::" (dual-stack). If your nodes
+  # run without IPv6 in the pod netns, set this to "0.0.0.0".
+  bindAddress: "::"
+
+  # --- secret_key -----------------------------------------------------------
+  # Injected as $SEARXNG_SECRET, which overrides server.secret_key in
+  # settings.yml. Never rendered into a ConfigMap.
+  #
+  # Leave `secretKey` empty to have the chart generate one. It is preserved
+  # across `helm upgrade` via a cluster lookup.
+  #
+  # !! GitOps warning: Argo CD / Flux render with `helm template`, where lookup
+  # !! returns nothing and the key would be regenerated on every sync — logging
+  # !! every user out. Use `existingSecret` in a GitOps setup.
+  secretKey: ""
+  existingSecret: ""
+  existingSecretKey: "secret-key"
+
+  # --- OpenMetrics ----------------------------------------------------------
+  # SearXNG exposes engine timing/reliability metrics at /metrics in OpenMetrics
+  # format, gated by HTTP Basic auth whose password is general.open_metrics.
+  #
+  # That password has no environment-variable override upstream, so it can only
+  # be supplied through the settings file. Enabling this therefore renders
+  # settings.yml into a *Secret* instead of a ConfigMap (same mount path, same
+  # content) rather than writing a credential into a ConfigMap. Disable it and
+  # the ConfigMap comes back.
+  metrics:
+    enabled: false
+    # Generated and preserved across upgrades when empty.
+    password: ""
+    # Basic-auth username. SearXNG only checks the password.
+    username: "prometheus"
+
+  # --- settings.yml ---------------------------------------------------------
+  # Rendered verbatim into a ConfigMap and mounted read-only at
+  # /etc/searxng/settings.yml. Anything from
+  # https://docs.searxng.org/admin/settings/ is valid here.
+  #
+  # Do NOT put server.secret_key here — the chart will refuse to render.
+  # Do NOT put valkey.url here — it is injected from a Secret.
+  settings:
+    use_default_settings: true
+
+    general:
+      instance_name: "SearXNG"
+      debug: false
+      # /metrics and /stats expose engine timing data. Off by default.
+      enable_metrics: false
+      contact_url: false
+      donation_url: false
+      privacypolicy_url: false
+
+    server:
+      port: 8080
+      # Requires Valkey (valkey.enabled or valkey.external.url).
+      limiter: false
+      # Implies limiter + link_token. Only for instances open to the internet.
+      public_instance: false
+      image_proxy: true
+      method: "POST"
+      default_http_headers:
+        X-Content-Type-Options: nosniff
+        X-Robots-Tag: noindex, nofollow
+        Referrer-Policy: no-referrer
+
+    ui:
+      static_use_hash: true
+      infinite_scroll: false
+      query_in_title: false
+
+    search:
+      safe_search: 0
+      autocomplete: ""
+      autocomplete_min: 4
+      default_lang: "auto"
+      formats:
+        - html
+        # Uncomment for Open WebUI / LLM tool use:
+        # - json
+
+    outgoing:
+      request_timeout: 3.0
+      max_request_timeout: 10.0
+      pool_connections: 100
+      pool_maxsize: 20
+      enable_http2: true
+
+    # --- Custom / additional search providers ------------------------------
+    # With use_default_settings: true, entries here are merged into the
+    # built-in engine list by `name`. Set `disabled: false` to enable a
+    # built-in engine, or supply a full definition to add a new one.
+    #
+    # engines:
+    #   - name: wikipedia
+    #     disabled: false
+    #   - name: my gitea
+    #     engine: gitea
+    #     base_url: https://git.example.com
+    #     shortcut: gt
+    #     categories: [it, repos]
+    #     timeout: 5.0
+    engines: []
+
+  # --- limiter.toml ---------------------------------------------------------
+  # Only mounted when settings.server.limiter or server.public_instance is true.
+  limiter:
+    # IPs allowed to set X-Forwarded-For. MUST include your ingress controller's
+    # pod network, or every request will be attributed to the controller's IP
+    # and the whole instance gets rate-limited as one client.
+    # Conversely: anything in these ranges can spoof client IPs. Narrow it if
+    # you can.
+    trustedProxies:
+      - "127.0.0.0/8"
+      - "::1"
+      - "10.0.0.0/8"
+      - "172.16.0.0/12"
+      - "192.168.0.0/16"
+      - "fd00::/8"
+    passIp: []
+    blockIp: []
+    ipv4Prefix: 32
+    ipv6Prefix: 48
+    filterLinkLocal: false
+    passSearxngOrg: true
+    # Set to a full TOML string to bypass all of the above.
+    rawConfig: ""
+
+  # --- Arbitrary extra files in /etc/searxng --------------------------------
+  # filename -> content. Mounted read-only alongside settings.yml.
+  # e.g. favicons.toml
+  extraConfigFiles: {}
+
+  # Extra env vars on the SearXNG container. Use valueFrom for anything secret.
+  extraEnv: []
+  # - name: SEARXNG_METHOD
+  #   value: "GET"
+
+  extraVolumes: []
+  extraVolumeMounts: []
+
+# -----------------------------------------------------------------------------
+# Service
+# -----------------------------------------------------------------------------
+service:
+  type: ClusterIP
+  port: 8080
+  annotations: {}
+  labels: {}
+  # sessionAffinity: ClientIP
+
+# -----------------------------------------------------------------------------
+# Ingress
+# -----------------------------------------------------------------------------
+ingress:
+  enabled: false
+  # Empty means "use the cluster's default IngressClass". Set it explicitly if
+  # you have more than one controller.
+  className: ""
+  annotations: {}
+  # Passed through verbatim, so controller- and cert-manager-specific
+  # annotations work as normal. Values are coerced to strings, so an
+  # unquoted number in this map will not be rejected by the API server.
+  #   cert-manager.io/cluster-issuer: letsencrypt-prod
+  #   nginx.ingress.kubernetes.io/proxy-body-size: 1m
+  #   nginx.ingress.kubernetes.io/proxy-read-timeout: 300
+  hosts:
+    - host: searxng.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: searxng-tls
+      hosts:
+        - searxng.example.com
+
+# -----------------------------------------------------------------------------
+# Valkey (cache + limiter backend)
+# -----------------------------------------------------------------------------
+valkey:
+  enabled: true
+
+  # standalone  = one primary, nothing else.
+  # replication = one primary plus `replica.count` read-only replicas that
+  #               stream from it.
+  #
+  # Read this before choosing `replication`: SearXNG connects with
+  # valkey.Valkey.from_url() against a single URL and has no Sentinel or
+  # failover support, so the app always writes to the primary and will NOT
+  # fail over on its own. Replicas buy you a warm, consistent copy for fast
+  # manual promotion and somewhere to point read-only consumers — not
+  # automatic HA. For real HA put a failover-aware proxy in front and set
+  # valkey.enabled=false + valkey.external.*.
+  architecture: standalone
+
+  replica:
+    count: 2
+    # Keep replicas off the primary's node where possible.
+    podAntiAffinityPreset: soft
+    podDisruptionBudget:
+      enabled: true
+      maxUnavailable: 1
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        memory: 256Mi
+
+  # redis_exporter speaks the Valkey protocol and exposes Prometheus metrics
+  # on :9121. Runs as a sidecar next to each Valkey pod.
+  metrics:
+    enabled: false
+    image:
+      registry: docker.io
+      repository: oliver006/redis_exporter
+      tag: "v1.67.0"
+      digest: ""
+      pullPolicy: IfNotPresent
+    port: 9121
+    resources:
+      requests:
+        cpu: 10m
+        memory: 32Mi
+      limits:
+        memory: 64Mi
+    # The exporter image runs as 59000:59000.
+    containerSecurityContext:
+      runAsNonRoot: true
+      runAsUser: 59000
+      runAsGroup: 59000
+      allowPrivilegeEscalation: false
+      readOnlyRootFilesystem: true
+      capabilities:
+        drop:
+          - ALL
+      seccompProfile:
+        type: RuntimeDefault
+
+  image:
+    registry: docker.io
+    repository: valkey/valkey
+    tag: "9-alpine"
+    digest: ""
+    pullPolicy: IfNotPresent
+
+  # Password is generated and stored in a Secret, then rendered into
+  # /etc/valkey/valkey.conf (mounted from that Secret) so it never appears in
+  # the process list. Generated passwords are alphanumeric so they are safe to
+  # embed in the connection URL.
+  auth:
+    enabled: true
+    password: ""
+    existingSecret: ""
+    existingSecretPasswordKey: "valkey-password"
+
+  # 999:1000 — the valkey-container image uses uid 999, gid 1000 (alpine
+  # already occupies gid 999).
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 999
+    runAsGroup: 1000
+    fsGroup: 1000
+    fsGroupChangePolicy: OnRootMismatch
+    seccompProfile:
+      type: RuntimeDefault
+
+  containerSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 999
+    runAsGroup: 1000
+    allowPrivilegeEscalation: false
+    privileged: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop:
+        - ALL
+    seccompProfile:
+      type: RuntimeDefault
+
+  # Extra valkey.conf directives, appended after the chart's own.
+  extraConfig: |
+    maxmemory-policy allkeys-lru
+
+  # Cache data does not need to survive a restart; the limiter simply
+  # re-learns. Enable if you want it anyway.
+  persistence:
+    enabled: false
+    storageClass: ""
+    accessModes:
+      - ReadWriteOnce
+    size: 1Gi
+    annotations: {}
+  # Used when persistence.enabled is false.
+  emptyDir:
+    sizeLimit: 512Mi
+
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      memory: 256Mi
+
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  priorityClassName: ""
+
+  # Point at a Valkey/Redis you already run. Only used when
+  # `valkey.enabled: false`. Full URL form:
+  #   valkey://[[user]:[password]]@host:6379/0
+  external:
+    url: ""
+    existingSecret: ""
+    existingSecretUrlKey: "valkey-url"
+
+# -----------------------------------------------------------------------------
+# NetworkPolicy
+# -----------------------------------------------------------------------------
+# Requires a CNI that enforces NetworkPolicy (Cilium, Calico, Antrea, ...).
+# On a CNI that ignores them (e.g. stock Flannel) these render but do nothing.
+networkPolicy:
+  enabled: true
+
+  # --- who may reach SearXNG on :8080 ---
+  ingress:
+    # Allow any pod in the release namespace (Open WebUI, the MCP relay, the
+    # helm test pod, ...).
+    allowSameNamespace: true
+    # Namespaces allowed to reach SearXNG, by name. This is where your ingress
+    # controller goes — the chart makes no assumption about which controller
+    # you run or where it lives.
+    #   ingress-nginx  -> ["ingress-nginx"]
+    #   Traefik        -> ["traefik"] or ["kube-system"]
+    #   HAProxy        -> ["haproxy-controller"]
+    #   Istio gateway  -> ["istio-system"]
+    # Find it with: kubectl get pods -A -l app.kubernetes.io/component=controller
+    fromNamespaces: []
+    # Full NetworkPolicyPeer entries, for when a namespace name is too coarse.
+    from: []
+    # Raw rules appended verbatim to spec.ingress.
+    extra: []
+
+  # --- where SearXNG may connect out ---
+  egress:
+    dns:
+      enabled: true
+      # Where CoreDNS/kube-dns lives.
+      namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: kube-system
+      podSelector:
+        matchLabels:
+          k8s-app: kube-dns
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+
+    # Upstream search engines. Private ranges are excluded so a compromised
+    # SearXNG pod cannot pivot into the cluster or your VPC.
+    internet:
+      enabled: true
+      ports:
+        - port: 80
+          protocol: TCP
+        - port: 443
+          protocol: TCP
+      cidrs:
+        - "0.0.0.0/0"
+      except:
+        - "10.0.0.0/8"
+        - "172.16.0.0/12"
+        - "192.168.0.0/16"
+        - "169.254.0.0/16"
+        - "100.64.0.0/10"
+      # Add "::/0" here if your cluster is dual-stack and engines resolve to v6.
+      ipv6Cidrs: []
+      ipv6Except:
+        - "fd00::/8"
+        - "fe80::/10"
+
+    extra: []
+
+  # Namespace-wide default-deny. Off by default because it affects every pod in
+  # the namespace, not just this release.
+  defaultDeny:
+    enabled: false
+
+# -----------------------------------------------------------------------------
+# Helm test pod (`helm test <release>`)
+# -----------------------------------------------------------------------------
+tests:
+  enabled: true
+  image:
+    registry: docker.io
+    repository: curlimages/curl
+    tag: "8.11.1"
+
+# -----------------------------------------------------------------------------
+# MCP relay — littleoffice/mcp-searxng-relay
+# -----------------------------------------------------------------------------
+# Exposes this SearXNG to MCP clients (Claude Desktop, agents) over Streamable
+# HTTP with bearer auth, per-identity audit logging and SSRF-protected fetching.
+# https://github.com/littleoffice/mcp-searxng-relay
+#
+# Enabling this automatically adds `json` to searxng.settings.search.formats —
+# the relay cannot work without it.
+mcpRelay:
+  enabled: false
+
+  image:
+    registry: ghcr.io
+    repository: littleoffice/mcp-searxng-relay
+    # Upstream publishes vX.Y.Z tags plus `latest`. Pin a version.
+    tag: "latest"
+    digest: ""
+    pullPolicy: IfNotPresent
+
+  # Sessions live in memory. With >1 replica a client's session ID is only
+  # valid on the pod that issued it, so either keep this at 1 or set
+  # `stateless: true` (which trades server-validated session IDs for
+  # restart-survivability). See the upstream README, "Session modes".
+  replicaCount: 1
+  stateless: false
+
+  # --- bearer tokens -------------------------------------------------------
+  # Rendered into a Secret and mounted at /etc/mcp-auth/tokens as
+  # `identity:token` lines. Identity is a log-correlation label only.
+  # Tokens must be >= 32 chars; leave `token` empty to have one generated
+  # (preserved across upgrades via cluster lookup — same GitOps caveat as
+  # searxng.secretKey, use existingSecret under Argo CD / Flux).
+  auth:
+    identities:
+      - name: default
+        token: ""
+    existingSecret: ""
+    existingSecretKey: "tokens"
+
+  # --- SearXNG private-engine tokens ---------------------------------------
+  # Forwarded verbatim as the `tokens` search parameter on every query. An
+  # engine carrying a `tokens:` list under searxng.settings.engines is hidden
+  # from, and unusable by, any caller that does not present one of them:
+  # https://docs.searxng.org/admin/settings/settings_engines.html#private-engines-tokens
+  #
+  # This is how several relays share one SearXNG instance while each reaches
+  # only its own engines. Give each relay only its own token and the boundary
+  # is enforced by SearXNG itself, which drops unsatisfied engines after
+  # resolving the whole reference list -- categories, the `engines` parameter
+  # and `!bang` syntax alike.
+  #
+  # Tokens are per-process, not per-identity: every identity in auth.identities
+  # shares them. Two groups of callers that must be separated need two relays.
+  #
+  # Pair each token with `disabled: true` on the engine, or it fires on every
+  # ordinary web search. Explicitly naming an engine still works when disabled.
+  #
+  #   searxngTokens:
+  #     tokens:
+  #       - ENGINE-TOKEN-A
+  #
+  # Rendered into its own Secret (<release>-searxng-mcp-relay-engine-tokens)
+  # rather than the agent token file, so the two can have different readers.
+  searxngTokens:
+    tokens: []
+    existingSecret: ""
+    existingSecretKey: "searxng-tokens"
+
+  # --- outbound fetch policy ----------------------------------------------
+  # searxng_read_url refuses non-public IPs by default. These punch holes in
+  # that, re-checked on every redirect hop. Leave empty unless you need the
+  # relay to read internal wikis.
+  fetch:
+    allowedHosts: []
+    allowedCIDRs: []
+
+  rateLimit:
+    # Per-caller requests/second. 0 disables.
+    rps: 5
+    # Defaults to 2x rps when empty.
+    burst: ""
+    # Identities that bypass the limiter entirely.
+    exempt: []
+
+  logLevel: info
+  # json keeps the per-identity audit lines parseable by log aggregators.
+  logFormat: json
+
+  session:
+    maxAge: "168h"
+    janitorInterval: "15m"
+
+  # The relay's /metrics endpoint is Prometheus text format behind the same
+  # bearer auth as the tools. Enabling this adds a dedicated `prometheus`
+  # identity whose bare token is also stored under the `scrape-token` key so a
+  # ServiceMonitor can reference it without parsing the token file.
+  metrics:
+    enabled: false
+    # The scrape credential is kept in its own Secret
+    # (<release>-searxng-mcp-relay-scrape) rather than alongside the agent
+    # tokens, so Prometheus's RBAC can be scoped to that object alone.
+    existingSecret: ""
+    existingSecretKey: "scrape-token"
+
+  # Any other upstream env var, verbatim. See the relay README's config table.
+  config: {}
+  #   CACHE_TTL_SECONDS: "300"
+  #   MAX_BODY_BYTES: "500000"
+  #   EXTRACT_LINKS: "true"
+
+  extraEnv: []
+
+  # Extra volumes and mounts, appended to the chart-managed `auth` volume.
+  # The image is FROM scratch: it contains the relay binary and
+  # /etc/ssl/certs/ca-certificates.crt, nothing else. Mount whole directories
+  # at paths that do not exist in the image rather than mounting a file over an
+  # existing one -- there is no shell to inspect the result if a mount goes
+  # wrong, and bind-mounting onto an existing cert path can fail at container
+  # init.
+  #
+  # Go honours SSL_CERT_FILE, and it REPLACES the built-in bundle rather than
+  # adding to it, so the file must contain the public roots you still need
+  # alongside your internal CAs.
+  #
+  #   extraVolumes:
+  #     - name: ca-bundle
+  #       configMap:
+  #         name: searxng-ca-bundle
+  #         defaultMode: 0444
+  #   extraVolumeMounts:
+  #     - name: ca-bundle
+  #       mountPath: /etc/ssl/extra
+  #       readOnly: true
+  #   extraEnv:
+  #     - name: SSL_CERT_FILE
+  #       value: /etc/ssl/extra/ca-bundle.crt
+  extraVolumes: []
+  extraVolumeMounts: []
+
+  # Image is FROM scratch and runs as 1001:1001 with no writable paths.
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 1001
+    runAsGroup: 1001
+    fsGroup: 1001
+    fsGroupChangePolicy: OnRootMismatch
+    seccompProfile:
+      type: RuntimeDefault
+
+  containerSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 1001
+    runAsGroup: 1001
+    allowPrivilegeEscalation: false
+    privileged: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop:
+        - ALL
+    seccompProfile:
+      type: RuntimeDefault
+
+  serviceAccount:
+    create: true
+    name: ""
+    annotations: {}
+    automountServiceAccountToken: false
+
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      # No CPU limit: Go's scheduler dislikes throttling. Memory is capped
+      # because the LRU cache plus session map can drift up.
+      memory: 512Mi
+
+  service:
+    type: ClusterIP
+    port: 8080
+    annotations: {}
+
+  podDisruptionBudget:
+    enabled: false
+    maxUnavailable: 1
+
+  # The MCP endpoint is at "/" on this service; /health is unauthenticated.
+  # Terminate TLS here — the relay speaks plain HTTP and bearer tokens must
+  # not cross the network in clear.
+  ingress:
+    enabled: false
+    className: ""
+    annotations: {}
+    hosts: []
+    #   - host: mcp.example.com
+    #     paths:
+    #       - path: /
+    #         pathType: Prefix
+    tls: []
+
+  networkPolicy:
+    # Who may call the MCP endpoint. Same shape as the SearXNG one.
+    ingress:
+      allowSameNamespace: true
+      fromNamespaces: []
+      from: []
+      extra: []
+    # The relay fetches arbitrary URLs on the model's behalf, so it needs the
+    # same internet egress carve-out as SearXNG.
+    egress:
+      internet:
+        enabled: true
+      extra: []
+
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  priorityClassName: ""
+
+# -----------------------------------------------------------------------------
+# Prometheus Operator integration
+# -----------------------------------------------------------------------------
+# One ServiceMonitor per component that actually exposes metrics. Each is also
+# gated on that component's own metrics toggle, because none of these endpoints
+# exist until you turn them on:
+#   searxng.metrics.enabled   -> SearXNG OpenMetrics  (basic auth)
+#   mcpRelay.metrics.enabled  -> MCP relay metrics    (bearer auth)
+#   valkey.metrics.enabled    -> redis_exporter sidecar (no auth, netpol-gated)
+metrics:
+  serviceMonitor:
+    enabled: false
+    # Namespace to create the ServiceMonitors in. Empty = release namespace.
+    namespace: ""
+    # Labels your Prometheus instance selects on (serviceMonitorSelector).
+    labels: {}
+    interval: 30s
+    scrapeTimeout: 10s
+    honorLabels: false
+    relabelings: []
+    metricRelabelings: []
+
+  # Namespaces allowed to scrape, when NetworkPolicy is on. Without this the
+  # deny-by-default ingress rules will block Prometheus.
+  allowScrapeFromNamespaces: []
+  #   - monitoring

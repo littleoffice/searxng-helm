@@ -1,0 +1,145 @@
+{{- if .Values.metrics.serviceMonitor.enabled }}
+{{- $sm := .Values.metrics.serviceMonitor }}
+{{- $ns := $sm.namespace | default .Release.Namespace }}
+{{- $created := false }}
+{{- if include "searxng.metricsEnabled" . }}
+{{- $created = true }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "searxng.fullname" . }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "searxng.serverLabels" . | nindent 4 }}
+    {{- with $sm.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  {{- if ne $ns .Release.Namespace }}
+  namespaceSelector:
+    matchNames:
+      - {{ .Release.Namespace }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "searxng.selectorLabels" . | nindent 6 }}
+  endpoints:
+    - port: http
+      path: /metrics
+      scheme: http
+      interval: {{ $sm.interval }}
+      scrapeTimeout: {{ $sm.scrapeTimeout }}
+      honorLabels: {{ $sm.honorLabels }}
+      # SearXNG gates /metrics behind HTTP Basic auth; it only checks the
+      # password, but a username has to be sent.
+      basicAuth:
+        username:
+          name: {{ include "searxng.settingsObjectName" . }}
+          key: open-metrics-username
+        password:
+          name: {{ include "searxng.settingsObjectName" . }}
+          key: open-metrics-password
+      {{- with $sm.relabelings }}
+      relabelings:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $sm.metricRelabelings }}
+      metricRelabelings:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}
+{{- if and .Values.mcpRelay.enabled .Values.mcpRelay.metrics.enabled }}
+{{- if $created }}
+---
+{{- end }}
+{{- $created = true }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "searxng.relay.fullname" . }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "searxng.relay.labels" . | nindent 4 }}
+    {{- with $sm.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  {{- if ne $ns .Release.Namespace }}
+  namespaceSelector:
+    matchNames:
+      - {{ .Release.Namespace }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "searxng.relay.selectorLabels" . | nindent 6 }}
+  endpoints:
+    - port: http
+      path: /metrics
+      scheme: http
+      interval: {{ $sm.interval }}
+      scrapeTimeout: {{ $sm.scrapeTimeout }}
+      honorLabels: {{ $sm.honorLabels }}
+      # Same bearer scheme as the tool endpoints, but a dedicated identity so
+      # scrapes are distinguishable from agent traffic in the audit log.
+      authorization:
+        type: Bearer
+        credentials:
+          name: {{ include "searxng.relay.scrapeSecretName" . }}
+          key: {{ include "searxng.relay.scrapeSecretKey" . }}
+      {{- with $sm.relabelings }}
+      relabelings:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $sm.metricRelabelings }}
+      metricRelabelings:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}
+{{- if and .Values.valkey.enabled .Values.valkey.metrics.enabled }}
+{{- if $created }}
+---
+{{- end }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "searxng.valkey.fullname" . }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "searxng.valkey.labels" . | nindent 4 }}
+    {{- with $sm.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  {{- if ne $ns .Release.Namespace }}
+  namespaceSelector:
+    matchNames:
+      - {{ .Release.Namespace }}
+  {{- end }}
+  # Matches both the primary and the replica Services.
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "searxng.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+    matchExpressions:
+      - key: app.kubernetes.io/component
+        operator: In
+        values:
+          - valkey-primary
+          - valkey-replica
+  endpoints:
+    - port: metrics
+      path: /metrics
+      scheme: http
+      interval: {{ $sm.interval }}
+      scrapeTimeout: {{ $sm.scrapeTimeout }}
+      honorLabels: {{ $sm.honorLabels }}
+      {{- with $sm.relabelings }}
+      relabelings:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $sm.metricRelabelings }}
+      metricRelabelings:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}
+{{- end }}

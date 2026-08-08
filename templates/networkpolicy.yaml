@@ -1,0 +1,310 @@
+{{- include "searxng.relay.validate" . -}}
+{{- if .Values.networkPolicy.enabled }}
+{{- $port := (.Values.searxng.settings.server).port | default 8080 -}}
+{{- $np := .Values.networkPolicy }}
+{{- $r := .Values.mcpRelay }}
+{{- $from := include "searxng.netpolFrom" (dict "ctx" . "cfg" $np.ingress) }}
+{{- $scrapeNs := .Values.metrics.allowScrapeFromNamespaces | default list }}
+{{- $scrapePeers := list }}
+{{- range $scrapeNs }}
+{{- $scrapePeers = append $scrapePeers (dict "namespaceSelector" (dict "matchLabels" (dict "kubernetes.io/metadata.name" .))) }}
+{{- end }}
+{{- $scrapeFrom := "" }}
+{{- if $scrapePeers }}{{ $scrapeFrom = toYaml $scrapePeers }}{{ end }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "searxng.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "searxng.serverLabels" . | nindent 4 }}
+  {{- with .Values.commonAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "searxng.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  # No matching rule below means the traffic is denied.
+  ingress:
+    {{- if ne $from "[]" }}
+    - from:
+        {{- $from | nindent 8 }}
+      ports:
+        - port: {{ $port | int }}
+          protocol: TCP
+    {{- end }}
+    {{- if and $r.enabled (not $np.ingress.allowSameNamespace) }}
+    # The relay proxies searches through SearXNG.
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "searxng.relay.selectorLabels" . | nindent 14 }}
+      ports:
+        - port: {{ $port | int }}
+          protocol: TCP
+    {{- end }}
+    {{- if and (include "searxng.metricsEnabled" .) $scrapeFrom }}
+    # Prometheus scraping /metrics.
+    - from:
+        {{- $scrapeFrom | nindent 8 }}
+      ports:
+        - port: {{ $port | int }}
+          protocol: TCP
+    {{- end }}
+    {{- with $np.ingress.extra }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  egress:
+    {{- if $np.egress.dns.enabled }}
+    - to:
+        - namespaceSelector:
+            {{- toYaml $np.egress.dns.namespaceSelector | nindent 12 }}
+          podSelector:
+            {{- toYaml $np.egress.dns.podSelector | nindent 12 }}
+      ports:
+        {{- toYaml $np.egress.dns.ports | nindent 8 }}
+    {{- end }}
+    {{- if .Values.valkey.enabled }}
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "searxng.valkey.primarySelectorLabels" . | nindent 14 }}
+      ports:
+        - port: 6379
+          protocol: TCP
+    {{- end }}
+    {{- if $np.egress.internet.enabled }}
+    # Upstream search engines. Cluster/VPC ranges are carved out so a
+    # compromised pod cannot reach internal services.
+    - to:
+        {{- range $np.egress.internet.cidrs }}
+        - ipBlock:
+            cidr: {{ . | quote }}
+            {{- with $np.egress.internet.except }}
+            except:
+              {{- toYaml . | nindent 14 }}
+            {{- end }}
+        {{- end }}
+        {{- range $np.egress.internet.ipv6Cidrs }}
+        - ipBlock:
+            cidr: {{ . | quote }}
+            {{- with $np.egress.internet.ipv6Except }}
+            except:
+              {{- toYaml . | nindent 14 }}
+            {{- end }}
+        {{- end }}
+      ports:
+        {{- toYaml $np.egress.internet.ports | nindent 8 }}
+    {{- end }}
+    {{- with $np.egress.extra }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+{{- if .Values.valkey.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "searxng.valkey.primaryName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "searxng.valkey.primaryLabels" . | nindent 4 }}
+  {{- with .Values.commonAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "searxng.valkey.primarySelectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "searxng.selectorLabels" . | nindent 14 }}
+        {{- if include "searxng.valkey.replicationEnabled" . }}
+        # Replicas open the replication link to the primary.
+        - podSelector:
+            matchLabels:
+              {{- include "searxng.valkey.replicaSelectorLabels" . | nindent 14 }}
+        {{- end }}
+      ports:
+        - port: 6379
+          protocol: TCP
+    {{- if and .Values.valkey.metrics.enabled $scrapeFrom }}
+    - from:
+        {{- $scrapeFrom | nindent 8 }}
+      ports:
+        - port: {{ .Values.valkey.metrics.port | int }}
+          protocol: TCP
+    {{- end }}
+  # The primary never initiates a connection. Replies to established
+  # connections are permitted by conntrack, so an empty egress list is safe.
+  egress: []
+{{- if include "searxng.valkey.replicationEnabled" . }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "searxng.valkey.replicaName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "searxng.valkey.replicaLabels" . | nindent 4 }}
+  {{- with .Values.commonAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "searxng.valkey.replicaSelectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        # Read-only consumers. SearXNG itself only talks to the primary.
+        - podSelector:
+            matchLabels:
+              {{- include "searxng.selectorLabels" . | nindent 14 }}
+      ports:
+        - port: 6379
+          protocol: TCP
+    {{- if and .Values.valkey.metrics.enabled $scrapeFrom }}
+    - from:
+        {{- $scrapeFrom | nindent 8 }}
+      ports:
+        - port: {{ .Values.valkey.metrics.port | int }}
+          protocol: TCP
+    {{- end }}
+  egress:
+    {{- if $np.egress.dns.enabled }}
+    - to:
+        - namespaceSelector:
+            {{- toYaml $np.egress.dns.namespaceSelector | nindent 12 }}
+          podSelector:
+            {{- toYaml $np.egress.dns.podSelector | nindent 12 }}
+      ports:
+        {{- toYaml $np.egress.dns.ports | nindent 8 }}
+    {{- end }}
+    # Replication link to the primary.
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "searxng.valkey.primarySelectorLabels" . | nindent 14 }}
+      ports:
+        - port: 6379
+          protocol: TCP
+{{- end }}
+{{- end }}
+{{- if $r.enabled }}
+{{- $relayFrom := include "searxng.netpolFrom" (dict "ctx" . "cfg" $r.networkPolicy.ingress) }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "searxng.relay.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "searxng.relay.labels" . | nindent 4 }}
+  {{- with .Values.commonAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "searxng.relay.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    {{- if ne $relayFrom "[]" }}
+    - from:
+        {{- $relayFrom | nindent 8 }}
+      ports:
+        - port: {{ $r.service.port | int }}
+          protocol: TCP
+    {{- end }}
+    {{- if and $r.metrics.enabled $scrapeFrom }}
+    # Prometheus scraping /metrics (bearer auth still applies).
+    - from:
+        {{- $scrapeFrom | nindent 8 }}
+      ports:
+        - port: {{ $r.service.port | int }}
+          protocol: TCP
+    {{- end }}
+    {{- with $r.networkPolicy.ingress.extra }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  egress:
+    {{- if $np.egress.dns.enabled }}
+    - to:
+        - namespaceSelector:
+            {{- toYaml $np.egress.dns.namespaceSelector | nindent 12 }}
+          podSelector:
+            {{- toYaml $np.egress.dns.podSelector | nindent 12 }}
+      ports:
+        {{- toYaml $np.egress.dns.ports | nindent 8 }}
+    {{- end }}
+    # Relay -> SearXNG.
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "searxng.selectorLabels" . | nindent 14 }}
+      ports:
+        - port: {{ $port | int }}
+          protocol: TCP
+    {{- if $r.networkPolicy.egress.internet.enabled }}
+    # searxng_read_url fetches pages the model asks for. The relay's own SSRF
+    # guard blocks non-public IPs; this enforces the same thing at the network
+    # layer.
+    - to:
+        {{- range $np.egress.internet.cidrs }}
+        - ipBlock:
+            cidr: {{ . | quote }}
+            {{- with $np.egress.internet.except }}
+            except:
+              {{- toYaml . | nindent 14 }}
+            {{- end }}
+        {{- end }}
+        {{- range $np.egress.internet.ipv6Cidrs }}
+        - ipBlock:
+            cidr: {{ . | quote }}
+            {{- with $np.egress.internet.ipv6Except }}
+            except:
+              {{- toYaml . | nindent 14 }}
+            {{- end }}
+        {{- end }}
+      ports:
+        {{- toYaml $np.egress.internet.ports | nindent 8 }}
+    {{- end }}
+    {{- with $r.networkPolicy.egress.extra }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+{{- end }}
+{{- if $np.defaultDeny.enabled }}
+---
+# WARNING: this applies to EVERY pod in namespace {{ .Release.Namespace }},
+# not just this release. Only enable it if you own the whole namespace.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "searxng.fullname" . }}-default-deny
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "searxng.labels" . | nindent 4 }}
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+{{- end }}
+{{- end }}
