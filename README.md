@@ -562,7 +562,39 @@ metrics:
 | MCP relay | `:8080/metrics` | Prometheus text | Bearer, dedicated `prometheus` identity |
 | Valkey | `:9121/metrics` | Prometheus text | none — reachable only via NetworkPolicy |
 
-Three things worth knowing:
+Four things worth knowing:
+
+**What SearXNG's `/metrics` actually is.** It is genuine OpenMetrics text
+(`Content-Type: text/plain`), served by the `/metrics` route — not to be
+confused with `/stats`, which is a separate route rendering an HTML engine
+statistics page for humans. The endpoint is gated on `general.enable_metrics`
+being true *and* `general.open_metrics` being a non-empty password: with either
+unset it returns `404 open metrics is disabled`, not `401`, so a 404 from a
+scrape means the settings never took effect rather than that the credential is
+wrong. Only the password is compared — the username is ignored, but an
+`Authorization: Basic` header still has to parse, which is why the
+ServiceMonitor sends `searxng.metrics.username` (default `prometheus`) at all.
+
+The exposed series are engine-scoped and nothing else, six of them, all labelled
+by `engine_name`:
+
+| Series | Type |
+| --- | --- |
+| `searxng_engines_response_time_total_seconds` | gauge |
+| `searxng_engines_response_time_processing_seconds` | gauge |
+| `searxng_engines_response_time_http_seconds` | gauge |
+| `searxng_engines_result_count_total` | counter |
+| `searxng_engines_request_count_total` | counter |
+| `searxng_engines_reliability_total` | counter |
+
+So this endpoint answers "which engines are slow or failing", not "is this
+instance healthy" — there are no process, request-rate, latency or error-rate
+metrics for SearXNG itself. Pair it with the relay's `/metrics` and the usual
+kubelet/cAdvisor series if you want the second question answered. Note also
+that the counters live in process memory and are never written to Valkey: they
+reset on restart, and each replica reports only its own traffic, so aggregate
+across the `instance` label in PromQL rather than reading a single target's
+value as instance-wide.
 
 **The metrics password lives in settings.yml.** Upstream gates `/metrics` on
 `general.open_metrics` and provides no environment-variable override for it, so
@@ -606,9 +638,9 @@ time.
 
 ## Known limitations
 
-- Valkey is standalone; no replication or Sentinel.
-- No ServiceMonitor. SearXNG's `/metrics` is an HTML stats page, not Prometheus
-  exposition, and `general.enable_metrics` is off by default.
+- SearXNG's `/metrics` is engine telemetry only — six `engine_name`-labelled
+  series, no process or request-level metrics for the instance itself. Its
+  counters are in-process and reset on restart. See [Metrics](#metrics).
 - NetworkPolicy has no effect on CNIs that don't implement it (e.g. stock
   Flannel).
 - Valkey replication has no automatic failover, for the reason described above.
