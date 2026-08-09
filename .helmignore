@@ -1,0 +1,33 @@
+# Patterns to ignore when building packages.
+# Matched against the chart root, one pattern per line.
+
+# VCS / editor / OS noise
+.git/
+.gitignore
+.gitattributes
+.github/
+.idea/
+.vscode/
+*.swp
+*.bak
+*.orig
+*.tmproj
+.DS_Store
+
+# Build output
+*.tgz
+.cr-release/
+.cr-index/
+dist/
+
+# CI-only inputs. These exist to be fed to `helm install` by the workflows;
+# shipping them would imply they are supported configurations, which they
+# are not — they exist to make pods schedulable on a 2-vCPU runner.
+ci/
+
+# Developer tooling
+hack/
+ct.yaml
+.ct/
+.yamllint.yaml
+renovate.json
