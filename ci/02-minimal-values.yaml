@@ -1,0 +1,28 @@
+# Scenario: the smallest thing the chart will produce.
+#
+# No cache, no NetworkPolicy, no PDB. Proves SearXNG comes up without Valkey
+# and that the limiter degrades rather than crashing when there is no backend.
+
+replicaCount: 1
+
+podDisruptionBudget:
+  enabled: false
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 256Mi
+  limits:
+    memory: 768Mi
+
+valkey:
+  enabled: false
+
+networkPolicy:
+  enabled: false
+
+serviceAccount:
+  create: true
+
+tests:
+  enabled: true

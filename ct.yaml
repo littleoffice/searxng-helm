@@ -1,0 +1,36 @@
+# chart-testing configuration.
+# https://github.com/helm/chart-testing
+#
+# This repository holds exactly one chart and it lives at the repository root,
+# not under `charts/`. `chart-dirs` therefore does not apply — `charts` names
+# the chart directly, which also means ct never has to work out which charts a
+# pull request touched.
+#
+# Only `ct lint` is driven by this file. Install and upgrade testing is done
+# explicitly in .github/workflows/ci.yaml: ct's install path derives namespaces
+# and release names from the chart's directory basename, which is "." here, and
+# its upgrade path checks the previous chart out over the working tree. Both
+# assume a chart in a subdirectory.
+
+remote: origin
+target-branch: main
+
+charts:
+  - .
+
+# Done explicitly in the `version` job, which can compare against the merge base
+# without depending on ct's chart-path handling.
+check-version-increment: false
+
+# Off deliberately: ct resolves each maintainer against the GitHub API without
+# a token, so a busy runner IP can exhaust the 60/hour anonymous limit and turn
+# a green chart red. Chart.yaml still carries maintainers for Artifact Hub.
+validate-maintainers: false
+
+chart-yaml-schema: .github/ct/chart_schema.yaml
+lint-conf: .github/ct/lintconf.yaml
+
+# Every file under ci/ is linted as an additional values overlay on top of
+# values.yaml, so a scenario that cannot even render fails here rather than in
+# the install job twenty minutes later.
+helm-extra-args: --timeout 600s

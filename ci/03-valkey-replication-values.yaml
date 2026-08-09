@@ -1,0 +1,43 @@
+# Scenario: Valkey in replication mode, with the redis_exporter sidecar.
+#
+# Exercises the second StatefulSet, the replica Service, the replica PDB and
+# the `replicaof` wiring in valkey.conf — none of which are touched by the
+# standalone path. One replica rather than the default two: a single kind node
+# with `podAntiAffinityPreset: soft` will schedule both, but there is no point
+# paying for the second.
+
+replicaCount: 1
+
+podDisruptionBudget:
+  enabled: false
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 256Mi
+  limits:
+    memory: 768Mi
+
+valkey:
+  enabled: true
+  architecture: replication
+  replica:
+    count: 1
+    podAntiAffinityPreset: soft
+    podDisruptionBudget:
+      enabled: false
+  auth:
+    enabled: true
+  persistence:
+    # A cache. Also keeps the test off the local-path provisioner.
+    enabled: false
+  metrics:
+    enabled: true
+
+networkPolicy:
+  enabled: true
+  ingress:
+    allowSameNamespace: true
+
+tests:
+  enabled: true

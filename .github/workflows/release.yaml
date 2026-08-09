@@ -1,0 +1,221 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - Chart.yaml
+      - values.yaml
+      - values.schema.json
+      - templates/**
+      - .helmignore
+      - README.md
+      - LICENSE
+  workflow_dispatch:
+    inputs:
+      force:
+        description: Publish even if the tag already exists
+        type: boolean
+        default: false
+
+permissions: {}
+
+# Releases are not interchangeable, so a second push waits rather than
+# cancelling the first — a cancelled run can leave a tag without a package.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  HELM_VERSION: v4.2.3
+
+jobs:
+  release:
+    name: Publish chart
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      # Creating the GitHub Release, pushing the tag, and committing the
+      # regenerated index.yaml to gh-pages.
+      contents: write
+      # Pushing the chart to GHCR as an OCI artifact.
+      packages: write
+      # Keyless signing and build provenance, both of which mint a short-lived
+      # OIDC token rather than holding a private key.
+      id-token: write
+      attestations: write
+    outputs:
+      version: ${{ steps.chart.outputs.version }}
+      released: ${{ steps.chart.outputs.released }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Set up Helm
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: ${{ env.HELM_VERSION }}
+
+      - name: Read chart version
+        id: chart
+        env:
+          FORCE: ${{ inputs.force }}
+        run: |
+          set -euo pipefail
+          version="$(sed -n 's/^version:[[:space:]]*//p' Chart.yaml | tr -d '"')"
+          name="$(sed -n 's/^name:[[:space:]]*//p' Chart.yaml | tr -d '"')"
+          tag="${name}-${version}"
+
+          {
+            echo "version=${version}"
+            echo "name=${name}"
+            echo "tag=${tag}"
+          } >> "$GITHUB_OUTPUT"
+
+          if git rev-parse --verify --quiet "refs/tags/${tag}" >/dev/null \
+             && [ "${FORCE}" != "true" ]; then
+            echo "released=false" >> "$GITHUB_OUTPUT"
+            echo "Tag ${tag} already exists; nothing to publish." \
+              >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "released=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # chart-releaser walks a directory of chart directories. This chart lives
+      # at the repository root, so it is staged into one. Copying rather than
+      # restructuring the repository keeps `helm install ./searxng-helm`
+      # working for anyone who clones it.
+      - name: Stage the chart
+        if: steps.chart.outputs.released == 'true'
+        env:
+          CHART_NAME: ${{ steps.chart.outputs.name }}
+        run: |
+          set -euo pipefail
+          dest=".cr-release/${CHART_NAME}"
+          mkdir -p "${dest}"
+          rsync -a \
+            --exclude='.git' \
+            --exclude='.github' \
+            --exclude='.cr-release' \
+            --exclude='ci' \
+            --exclude='hack' \
+            --exclude='ct.yaml' \
+            ./ "${dest}/"
+          # helm still applies .helmignore on top of this; the excludes above
+          # only keep rsync from copying directories it would then ignore.
+          helm lint "${dest}"
+
+      - name: Publish GitHub Release and update the Helm repo index
+        if: steps.chart.outputs.released == 'true'
+        uses: helm/chart-releaser-action@cae68fefc6b5f367a0275617c9f83181ba54714f # v1.7.0
+        with:
+          charts_dir: .cr-release
+          skip_existing: true
+          pages_branch: gh-pages
+          mark_as_latest: true
+        env:
+          CR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Log in to GHCR
+        if: steps.chart.outputs.released == 'true'
+        env:
+          REGISTRY_USER: ${{ github.actor }}
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          printf '%s' "${REGISTRY_TOKEN}" \
+            | helm registry login ghcr.io --username "${REGISTRY_USER}" --password-stdin
+
+      - name: Push to GHCR as an OCI artifact
+        id: oci
+        if: steps.chart.outputs.released == 'true'
+        env:
+          CHART_NAME: ${{ steps.chart.outputs.name }}
+          CHART_VERSION: ${{ steps.chart.outputs.version }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+          owner="$(echo "${OWNER}" | tr '[:upper:]' '[:lower:]')"
+          repo="ghcr.io/${owner}/charts"
+
+          helm package ".cr-release/${CHART_NAME}" --destination dist
+          package="dist/${CHART_NAME}-${CHART_VERSION}.tgz"
+
+          # helm push writes Pushed/Digest to stderr.
+          helm push "${package}" "oci://${repo}" 2>&1 | tee push.log
+          digest="$(sed -n 's/^Digest:[[:space:]]*//p' push.log | tail -n 1)"
+          if [ -z "${digest}" ]; then
+            echo "could not determine the pushed digest" >&2
+            exit 1
+          fi
+
+          {
+            echo "package=${package}"
+            echo "image=${repo}/${CHART_NAME}"
+            echo "digest=${digest}"
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo "### Published"
+            echo
+            echo '```console'
+            echo "helm install searxng oci://${repo}/${CHART_NAME} --version ${CHART_VERSION}"
+            echo '```'
+            echo
+            echo "Digest: \`${digest}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Records, in a transparency log, which workflow at which commit built
+      # this artifact. `helm install` will not check it, but `gh attestation
+      # verify` and admission controllers can.
+      - name: Attest build provenance for the OCI artifact
+        if: steps.chart.outputs.released == 'true'
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ steps.oci.outputs.image }}
+          subject-digest: ${{ steps.oci.outputs.digest }}
+          push-to-registry: true
+
+      - name: Attest build provenance for the .tgz
+        if: steps.chart.outputs.released == 'true'
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: ${{ steps.oci.outputs.package }}
+
+      - name: Install cosign
+        if: steps.chart.outputs.released == 'true'
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+      # Keyless: the signing certificate is bound to this workflow's OIDC
+      # identity and expires in minutes, so there is no key to rotate or leak.
+      - name: Sign the OCI artifact
+        if: steps.chart.outputs.released == 'true'
+        env:
+          IMAGE: ${{ steps.oci.outputs.image }}
+          DIGEST: ${{ steps.oci.outputs.digest }}
+        run: cosign sign --yes "${IMAGE}@${DIGEST}"
+
+      - name: Verify the signature
+        if: steps.chart.outputs.released == 'true'
+        env:
+          IMAGE: ${{ steps.oci.outputs.image }}
+          DIGEST: ${{ steps.oci.outputs.digest }}
+          REPO: ${{ github.repository }}
+          SERVER: ${{ github.server_url }}
+        run: |
+          set -euo pipefail
+          cosign verify "${IMAGE}@${DIGEST}" \
+            --certificate-identity-regexp "^${SERVER}/${REPO}/.github/workflows/release.yaml@" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            > /dev/null
+          echo "signature verifies"
+
+      - name: Upload the package
+        if: steps.chart.outputs.released == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: searxng-chart-${{ steps.chart.outputs.version }}
+          path: dist/*.tgz
+          retention-days: 30

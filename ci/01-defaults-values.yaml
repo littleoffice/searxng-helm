@@ -1,0 +1,38 @@
+# Scenario: the chart as shipped, shrunk to fit a 2-vCPU runner.
+#
+# Everything here that differs from values.yaml is a concession to the runner,
+# not a recommendation. `replicaCount: 1` in particular is the opposite of what
+# the chart defaults to for good reason.
+
+image:
+  # Pinned by digest in values.yaml already; this keeps the tag honest in
+  # `kubectl describe` output.
+  tag: "latest"
+
+replicaCount: 1
+
+podDisruptionBudget:
+  # A PDB over a single replica makes node drains in the test cluster hang.
+  enabled: false
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 256Mi
+  limits:
+    memory: 768Mi
+
+valkey:
+  enabled: true
+  architecture: standalone
+
+# kindnet does not enforce NetworkPolicy, so these render and are accepted by
+# the API server without actually gating traffic. That is still worth testing:
+# the failure mode being guarded against is an invalid or rejected object.
+networkPolicy:
+  enabled: true
+  ingress:
+    allowSameNamespace: true
+
+tests:
+  enabled: true

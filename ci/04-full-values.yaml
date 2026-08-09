@@ -1,0 +1,121 @@
+# ci-needs: prometheus-crds
+#
+# Scenario: every optional subsystem on at once — Ingress, HPA, the MCP relay,
+# SearXNG /metrics basic-auth, both ServiceMonitors, custom settings.yml,
+# limiter.toml and an extra config file.
+#
+# This is the scenario that catches interaction bugs: enabling the relay
+# rewrites `search.formats`, enabling relay metrics mints a `prometheus`
+# identity in the token file, and enabling either ServiceMonitor requires the
+# Prometheus Operator CRDs — hence the `ci-needs` directive above, which the
+# install workflow reads before creating the cluster.
+
+replicaCount: 1
+
+podDisruptionBudget:
+  enabled: true
+  maxUnavailable: 1
+
+autoscaling:
+  enabled: true
+  minReplicas: 1
+  maxReplicas: 3
+  targetCPUUtilizationPercentage: 75
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 256Mi
+  limits:
+    memory: 768Mi
+
+searxng:
+  baseUrl: "https://search.ci.invalid/"
+  metrics:
+    enabled: true
+    username: prometheus
+  settings:
+    general:
+      instance_name: "CI"
+    server:
+      limiter: true
+      public_instance: false
+      image_proxy: true
+    search:
+      safe_search: 1
+  limiter:
+    trustedProxies:
+      - "10.0.0.0/8"
+    filterLinkLocal: true
+  extraConfigFiles:
+    ci-marker.txt: |
+      written by ci/04-full-values.yaml
+  extraEnv:
+    - name: CI_SCENARIO
+      value: "full"
+
+service:
+  type: ClusterIP
+  port: 8080
+
+ingress:
+  enabled: true
+  className: ""
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: 1m
+  hosts:
+    - host: search.ci.invalid
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+valkey:
+  enabled: true
+  architecture: standalone
+  auth:
+    enabled: true
+  metrics:
+    enabled: true
+
+networkPolicy:
+  enabled: true
+  ingress:
+    allowSameNamespace: true
+    fromNamespaces:
+      - ingress-nginx
+
+mcpRelay:
+  enabled: true
+  replicaCount: 1
+  stateless: false
+  auth:
+    identities:
+      - name: default
+        token: ""
+  searxngTokens:
+    tokens:
+      - ci-engine-token-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  rateLimit:
+    rps: 5
+  metrics:
+    enabled: true
+  podDisruptionBudget:
+    enabled: false
+  resources:
+    requests:
+      cpu: 25m
+      memory: 64Mi
+    limits:
+      memory: 128Mi
+
+metrics:
+  serviceMonitor:
+    enabled: true
+    labels:
+      release: ci
+  allowScrapeFromNamespaces:
+    - monitoring
+
+tests:
+  enabled: true

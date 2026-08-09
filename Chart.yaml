@@ -7,7 +7,17 @@ description: |
 type: application
 
 # Chart version. Bump on every change to the chart itself.
-version: 1.5.0
+#
+# Reset to 1.0.0 for the first publication: the 1.4.0/1.5.0 that preceded it
+# were never tagged and never packaged, so no one could install them and no
+# one is owed continuity with them. Everything from here is a promise —
+# values.yaml is the public interface, and a breaking change to it takes the
+# major.
+#
+# CI enforces the bump: a pull request touching Chart.yaml, values.yaml,
+# values.schema.json, templates/ or .helmignore without raising this fails,
+# and once a release exists the number may not go below the published one.
+version: 1.0.0
 
 # Default container image tag when `image.tag` is empty.
 # NOTE: "latest" is a convenience only. Pin an immutable tag (e.g. 2026.7.22-ef8f6470e)
@@ -29,6 +39,22 @@ keywords:
   - privacy
   - valkey
 
+maintainers:
+  - name: littleoffice
+    url: https://github.com/littleoffice
+
 annotations:
   category: Analytics
   licenses: AGPL-3.0
+  # Artifact Hub reads these off the packaged chart.
+  artifacthub.io/license: AGPL-3.0
+  artifacthub.io/links: |
+    - name: source
+      url: https://github.com/littleoffice/searxng-helm
+    - name: MCP relay
+      url: https://github.com/littleoffice/mcp-searxng-relay
+  artifacthub.io/signKey: |
+    Signed with cosign keyless signing. Verify with:
+    cosign verify ghcr.io/littleoffice/charts/searxng:<version> \
+      --certificate-identity-regexp '^https://github.com/littleoffice/searxng-helm/' \
+      --certificate-oidc-issuer https://token.actions.githubusercontent.com

@@ -1,0 +1,575 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Deny by default; each job opts into the read scope it needs. Nothing in this
+# workflow writes to the repository.
+permissions: {}
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # Helm 4 is the default everywhere. Helm 3 is kept in the matrix because a
+  # chart that only installs under one of them is a chart with a support
+  # burden nobody wrote down.
+  HELM_VERSION: v4.2.3
+  HELM_LEGACY_VERSION: v3.21.3
+  KIND_VERSION: v0.32.0
+  KUBECONFORM_VERSION: v0.8.0
+  ACTIONLINT_VERSION: 1.7.12
+  PROMETHEUS_OPERATOR_VERSION: v0.93.0
+
+jobs:
+  workflows:
+    name: Lint workflows
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install actionlint
+        run: |
+          base="https://github.com/rhysd/actionlint/releases/download"
+          curl -fsSL \
+            "${base}/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz" \
+            | tar -xz -C /usr/local/bin actionlint
+          actionlint --version
+
+      # actionlint shells out to shellcheck for `run:` blocks, which is most of
+      # the value here: the install matrix is a few hundred lines of bash.
+      - name: Run actionlint
+        run: actionlint -color
+
+      - name: Check scripts
+        run: shellcheck --severity=warning .github/ci/*.sh hack/*.sh examples/*.sh
+
+  lint:
+    name: Lint chart (helm ${{ matrix.helm }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        helm:
+          - v4.2.3
+          - v3.21.3
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Helm
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: ${{ matrix.helm }}
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.13'
+          check-latest: true
+
+      # Brings ct, yamllint and yamale onto PATH.
+      - name: Set up chart-testing
+        uses: helm/chart-testing-action@6ec842c01de15ebb84c8627d2744a0c2f2755c9f # v2.8.0
+
+      - name: ct lint
+        run: ct lint --config ct.yaml
+
+      # ct runs `helm lint` without --strict. Doing it again in strict mode
+      # turns INFO/WARNING into failures, and does it once per scenario so a
+      # values overlay cannot introduce a warning that the default render
+      # never sees.
+      - name: helm lint --strict
+        run: |
+          set -euo pipefail
+          echo "::group::default values"
+          helm lint --strict .
+          echo "::endgroup::"
+          for f in ci/*-values.yaml examples/values-*.yaml; do
+            echo "::group::${f}"
+            helm lint --strict . --values "${f}"
+            echo "::endgroup::"
+          done
+
+      # values.schema.json is enforced by Helm on every render, so a values
+      # file that violates it fails above. This asserts the inverse: that the
+      # schema itself is valid JSON Schema, which Helm will not tell you.
+      - name: Validate values.schema.json
+        run: |
+          set -euo pipefail
+          python3 -m pip install --quiet jsonschema
+          python3 - <<'PY'
+          import json
+          from jsonschema import Draft7Validator
+
+          schema = json.load(open("values.schema.json"))
+          Draft7Validator.check_schema(schema)
+          print("values.schema.json is a valid draft-07 schema")
+          PY
+
+      # A key that the schema does not know about must be rejected. Without
+      # this, a schema that quietly stopped being enforced would look healthy.
+      - name: Assert the schema actually rejects unknown keys
+        run: |
+          set -euo pipefail
+          if helm template t . --set thisKeyDoesNotExist=true >/dev/null 2>&1; then
+            echo "values.schema.json accepted an unknown top-level key" >&2
+            exit 1
+          fi
+          echo "unknown top-level keys are rejected"
+
+  version:
+    name: Chart version bumped
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      # ct's own --check-version-increment assumes the chart sits in a
+      # subdirectory. This does the same job against the merge base, and only
+      # fires when something that ends up in the package actually changed.
+      - name: Compare Chart.yaml version against the merge base and the last tag
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+          base="origin/${BASE_REF}"
+          if ! git rev-parse --verify --quiet "${base}" >/dev/null; then
+            git fetch --no-tags origin "+refs/heads/${BASE_REF}:refs/remotes/${base}"
+          fi
+
+          if git diff --quiet "${base}...HEAD" -- \
+              Chart.yaml values.yaml values.schema.json templates .helmignore; then
+            echo "No packaged chart content changed; version bump not required."
+            exit 0
+          fi
+
+          old="$(git show "${base}:Chart.yaml" | sed -n 's/^version:[[:space:]]*//p' | tr -d '"')"
+          new="$(sed -n 's/^version:[[:space:]]*//p' Chart.yaml | tr -d '"')"
+          echo "merge base=${old}  head=${new}"
+
+          if [ "${old}" = "${new}" ]; then
+            echo "::error file=Chart.yaml::Chart content changed but version is still ${new}. Bump it." >&2
+            exit 1
+          fi
+
+          # Monotonicity is only a promise to people who can already install a
+          # given version, so it is measured against what has been *released*,
+          # not against whatever number happens to sit on the base branch.
+          # Before the first tag exists the number is private and may move in
+          # any direction — which is what makes renumbering to 1.0.0 for the
+          # first publication a legal move rather than a rule to suspend.
+          latest="$(git tag --list 'searxng-*' | sed 's/^searxng-//' | sort -V | tail -n 1)"
+          if [ -z "${latest}" ]; then
+            echo "Nothing released yet; ${new} is unconstrained."
+            echo "Chart version ${old} -> ${new} (pre-release, no published versions)" \
+              >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          echo "last released=${latest}"
+          if [ "${latest}" = "${new}" ]; then
+            echo "::error file=Chart.yaml::${new} is already published." >&2
+            exit 1
+          fi
+
+          highest="$(printf '%s\n%s\n' "${latest}" "${new}" | sort -V | tail -n 1)"
+          if [ "${highest}" != "${new}" ]; then
+            echo "::error file=Chart.yaml::${new} is below the published ${latest}." >&2
+            exit 1
+          fi
+
+          echo "Chart version ${old} -> ${new} (last published: ${latest})" \
+            >> "$GITHUB_STEP_SUMMARY"
+
+  render:
+    name: Render + validate (k8s ${{ matrix.kubernetes }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        # The floor is whatever Chart.yaml's kubeVersion claims to support;
+        # if that claim stops being true this is where it shows up.
+        kubernetes: ['1.25.0', '1.30.0', '1.33.0', '1.36.0']
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Helm
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: ${{ env.HELM_VERSION }}
+
+      - name: Install kubeconform
+        run: |
+          set -euo pipefail
+          base="https://github.com/yannh/kubeconform/releases/download"
+          curl -fsSL \
+            "${base}/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz" \
+            | tar -xz -C /usr/local/bin kubeconform
+          kubeconform -v
+
+      - name: Render every scenario
+        env:
+          KUBE_VERSION: ${{ matrix.kubernetes }}
+        run: |
+          set -euo pipefail
+          mkdir -p rendered
+          for f in ci/*-values.yaml examples/values-*.yaml; do
+            name="$(basename "${f}" .yaml)"
+            echo "::group::render ${f}"
+            helm template searxng . \
+              --namespace searxng \
+              --kube-version "${KUBE_VERSION}" \
+              --values "${f}" \
+              > "rendered/${name}.yaml"
+            echo "::endgroup::"
+          done
+          ls -l rendered
+
+      # -strict rejects fields the API server would silently drop, which is
+      # where typos in a securityContext or a probe end up hiding.
+      - name: Validate against the Kubernetes API schema
+        env:
+          KUBE_VERSION: ${{ matrix.kubernetes }}
+        run: |
+          set -euo pipefail
+          # The CRD catalog supplies schemas the Kubernetes API does not ship,
+          # which here means ServiceMonitor.
+          crds="https://raw.githubusercontent.com/datreeio/CRDs-catalog/main"
+          crds="${crds}/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json"
+
+          kubeconform \
+            -strict \
+            -summary \
+            -verbose \
+            -kubernetes-version "${KUBE_VERSION}" \
+            -schema-location default \
+            -schema-location "${crds}" \
+            rendered/*.yaml
+
+      - name: Upload rendered manifests
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: rendered-k8s-${{ matrix.kubernetes }}
+          path: rendered/
+          retention-days: 7
+
+  unit:
+    name: Render-time assertions
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Helm
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: ${{ env.HELM_VERSION }}
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.13'
+          check-latest: true
+
+      - name: Install PyYAML
+        run: python3 -m pip install --quiet pyyaml
+
+      # Pre-existing suite: asserts that credentials written to two places
+      # agree, and that the render-time guards fire. None of this is visible
+      # to helm lint.
+      - name: Credential consistency
+        run: ./hack/test-credential-consistency.sh .
+
+      - name: No credentials in argv
+        run: |
+          set -euo pipefail
+          helm template t . \
+            --set mcpRelay.enabled=true \
+            --set mcpRelay.metrics.enabled=true \
+            --set searxng.metrics.enabled=true > /tmp/all.yaml
+          python3 - <<'PY'
+          import sys, yaml
+
+          docs = [d for d in yaml.safe_load_all(open('/tmp/all.yaml')) if d]
+          secrets = {}
+          for d in docs:
+              if d.get('kind') == 'Secret':
+                  secrets.update(d.get('stringData') or {})
+
+          # Anything that looks like a generated credential must not appear in
+          # a command, arg or plain env value anywhere in the render.
+          needles = {v for k, v in secrets.items()
+                     if isinstance(v, str) and len(v) >= 16 and '\n' not in v}
+
+          bad = []
+          for d in docs:
+              if d.get('kind') == 'Pod':
+                  spec = d.get('spec')
+              else:
+                  spec = d.get('spec', {}).get('template', {}).get('spec')
+              if not isinstance(spec, dict):
+                  continue
+              for c in (spec.get('containers') or []) + (spec.get('initContainers') or []):
+                  surface = []
+                  surface += c.get('command') or []
+                  surface += c.get('args') or []
+                  for e in c.get('env') or []:
+                      if isinstance(e.get('value'), str):
+                          surface.append(e['value'])
+                  for s in surface:
+                      for n in needles:
+                          if n in s:
+                              bad.append((d['metadata']['name'], c['name']))
+
+          if bad:
+              print('credential material found in argv/env:', bad, file=sys.stderr)
+              sys.exit(1)
+          print(f'checked {len(needles)} generated credentials; none exposed in argv or plain env')
+          PY
+
+      - name: No init containers
+        run: |
+          set -euo pipefail
+          if grep -q 'initContainers' /tmp/all.yaml; then
+            echo "the chart grew an init container; README says there are none" >&2
+            exit 1
+          fi
+          echo "no init containers"
+
+  install:
+    name: Install (k8s ${{ matrix.kubernetes }}, helm ${{ matrix.helm }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - kubernetes: '1.36.1'
+            node_image: kindest/node:v1.36.1@sha256:3489c7674813ba5d8b1a9977baea8a6e553784dab7b84759d1014dbd78f7ebd5
+            helm: v4.2.3
+          - kubernetes: '1.35.5'
+            node_image: kindest/node:v1.35.5@sha256:ce977ae6d65918d0b58a5f8b5e940429c2ce42fa3a5619ec2bbc60b949c0ac95
+            helm: v4.2.3
+          - kubernetes: '1.34.8'
+            node_image: kindest/node:v1.34.8@sha256:02722c2dedddcfc00febf5d27fbeb9b7b2c14294c82109ff4a85d89ac9ba3256
+            helm: v4.2.3
+          - kubernetes: '1.33.12'
+            node_image: kindest/node:v1.33.12@sha256:3f5c8443c620245e4d355cfe09e96a91ead32ceaa569d3f1ca9edf0cb2fe2ff4
+            helm: v4.2.3
+          # Helm 3 against the newest node image. Helm 4 defaults new installs
+          # to server-side apply; Helm 3 does not, and the two disagree about
+          # field ownership often enough to be worth one job.
+          - kubernetes: '1.36.1'
+            node_image: kindest/node:v1.36.1@sha256:3489c7674813ba5d8b1a9977baea8a6e553784dab7b84759d1014dbd78f7ebd5
+            helm: v3.21.3
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Helm
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: ${{ matrix.helm }}
+
+      - name: Create cluster
+        uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc # v1.14.0
+        with:
+          version: ${{ env.KIND_VERSION }}
+          node_image: ${{ matrix.node_image }}
+          cluster_name: searxng-ci
+          wait: 300s
+
+      - name: Cluster info
+        run: |
+          kubectl version
+          kubectl get nodes -o wide
+
+      # ci/04-full-values.yaml declares `# ci-needs: prometheus-crds`. Only the
+      # ServiceMonitor CRD is needed, and it is applied server-side because the
+      # operator's CRDs blow past the client-side annotation size limit.
+      - name: Install Prometheus Operator CRDs
+        run: |
+          set -euo pipefail
+          base="https://raw.githubusercontent.com/prometheus-operator/prometheus-operator"
+          kubectl apply --server-side -f \
+            "${base}/${PROMETHEUS_OPERATOR_VERSION}/example/prometheus-operator-crd/monitoring.coreos.com_servicemonitors.yaml"
+          kubectl wait --for=condition=Established --timeout=60s \
+            crd/servicemonitors.monitoring.coreos.com
+
+      - name: Install, test and upgrade every scenario
+        run: .github/ci/install-scenarios.sh .
+
+      - name: Cluster state on failure
+        if: failure()
+        run: |
+          kubectl get all --all-namespaces || true
+          kubectl get events --all-namespaces --sort-by=.lastTimestamp | tail -100 || true
+
+  upgrade-from-released:
+    name: Upgrade from the last published release
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Helm
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: ${{ env.HELM_VERSION }}
+
+      # Nothing is published before the first release, and a fork will not have
+      # a package either. Both are normal, so this reports "skip" rather than
+      # failing the run.
+      - name: Look for a published chart
+        id: published
+        env:
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+          owner="$(echo "${OWNER}" | tr '[:upper:]' '[:lower:]')"
+          ref="oci://ghcr.io/${owner}/charts/searxng"
+          if version="$(helm show chart "${ref}" 2>/dev/null | sed -n 's/^version:[[:space:]]*//p')"; then
+            if [ -n "${version}" ]; then
+              {
+                echo "found=true"
+                echo "ref=${ref}"
+                echo "version=${version}"
+              } >> "$GITHUB_OUTPUT"
+              echo "Previous release: ${version}"
+              exit 0
+            fi
+          fi
+          echo "found=false" >> "$GITHUB_OUTPUT"
+          echo "No published chart at ${ref}; skipping the upgrade path." \
+            >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Create cluster
+        if: steps.published.outputs.found == 'true'
+        uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc # v1.14.0
+        with:
+          version: ${{ env.KIND_VERSION }}
+          node_image: kindest/node:v1.36.1@sha256:3489c7674813ba5d8b1a9977baea8a6e553784dab7b84759d1014dbd78f7ebd5
+          cluster_name: searxng-upgrade
+          wait: 300s
+
+      # The real question this job answers: does an existing release survive
+      # the jump, and do the credentials it already holds come through intact?
+      # `lookup` only works against a live cluster, so nothing before this
+      # point can tell us.
+      - name: Install the published version, then upgrade to this one
+        if: steps.published.outputs.found == 'true'
+        env:
+          CHART_REF: ${{ steps.published.outputs.ref }}
+          CHART_VERSION: ${{ steps.published.outputs.version }}
+        run: |
+          set -euo pipefail
+          ns=upgrade
+          kubectl create namespace "${ns}"
+
+          helm install searxng "${CHART_REF}" \
+            --version "${CHART_VERSION}" \
+            --namespace "${ns}" \
+            --values ci/01-defaults-values.yaml \
+            --wait --timeout 10m
+
+          before="$(kubectl -n "${ns}" get secrets \
+            -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.data}{"\n"}{end}' \
+            | grep -v 'sh.helm.release' | sort)"
+
+          helm upgrade searxng . \
+            --namespace "${ns}" \
+            --values ci/01-defaults-values.yaml \
+            --wait --timeout 10m
+
+          after="$(kubectl -n "${ns}" get secrets \
+            -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.data}{"\n"}{end}' \
+            | grep -v 'sh.helm.release' | sort)"
+
+          if [ "${before}" != "${after}" ]; then
+            echo "credentials changed upgrading ${CHART_VERSION} -> working tree" >&2
+            diff <(printf '%s\n' "${before}") <(printf '%s\n' "${after}") || true
+            exit 1
+          fi
+
+          helm test searxng --namespace "${ns}" --logs --timeout 5m
+          echo "Upgraded ${CHART_VERSION} -> working tree, credentials intact." \
+            >> "$GITHUB_STEP_SUMMARY"
+
+  # One job to point branch protection at. Adding or renaming a job above does
+  # not then require editing the ruleset, and a skipped or cancelled dependency
+  # cannot masquerade as a pass.
+  ci:
+    name: CI
+    if: always()
+    needs:
+      - workflows
+      - lint
+      - version
+      - render
+      - unit
+      - install
+      - upgrade-from-released
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Check results
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          set -euo pipefail
+          echo "job results: ${RESULTS}"
+          for r in ${RESULTS}; do
+            case "${r}" in
+              success|skipped) ;;
+              *) echo "a required job did not pass: ${r}" >&2; exit 1 ;;
+            esac
+          done
+          echo "All checks passed."

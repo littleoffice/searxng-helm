@@ -1,0 +1,11 @@
+# Chart packaging output
+*.tgz
+dist/
+
+# CI scratch directories
+.cr-release/
+.cr-index/
+rendered/
+
+# Local secrets produced by examples/gen-secrets.sh
+secrets.yaml
