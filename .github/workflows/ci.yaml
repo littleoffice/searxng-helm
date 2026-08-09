@@ -577,7 +577,7 @@ jobs:
             exit 1
           fi
 
-          helm test searxng --namespace "${ns}" --logs --timeout 5m
+          helm test searxng --namespace "${ns}" --timeout 5m
           echo "Upgraded ${CHART_VERSION} -> working tree, credentials intact." \
             >> "$GITHUB_STEP_SUMMARY"
 

@@ -46,6 +46,16 @@ dump_diagnostics() {
   printf '::endgroup::\n'
 }
 
+# The test pod carries `helm.sh/hook-delete-policy: hook-succeeded`, so it only
+# still exists when it failed -- which is exactly when its logs are wanted.
+dump_test_pod() {
+  local ns="$1"
+  printf '::group::helm test pod in %s\n' "$ns"
+  kubectl -n "$ns" describe pod -l app.kubernetes.io/component=test 2>&1 || true
+  kubectl -n "$ns" logs -l app.kubernetes.io/component=test --all-containers --tail=-1 2>&1 || true
+  printf '::endgroup::\n'
+}
+
 # Everything the chart may have generated, in a form that can be diffed. Sorted
 # so map ordering cannot produce a spurious difference.
 snapshot_secrets() {
@@ -93,8 +103,14 @@ run_scenario() {
   fi
   ok "${base}: installed"
 
-  if ! helm test "$release" --namespace "$namespace" --logs --timeout 5m; then
+  # No --logs: Helm 3 deletes the hook pod under `hook-succeeded` before it
+  # reads the logs back, so a test that *passed* fails the command with
+  # "pods not found". Helm 4 reordered those two steps. Since a failed test
+  # pod is never deleted, fetching its logs on the failure path costs nothing
+  # and works on both.
+  if ! helm test "$release" --namespace "$namespace" --timeout 5m; then
     bad "${base}: helm test failed"
+    dump_test_pod "$namespace"
     dump_diagnostics "$namespace" "$release"
     helm uninstall "$release" --namespace "$namespace" --wait >/dev/null 2>&1 || true
     kubectl delete namespace "$namespace" --wait=false >/dev/null 2>&1 || true
@@ -138,8 +154,9 @@ run_scenario() {
     ok "${base}: checksum/config stable"
   fi
 
-  if ! helm test "$release" --namespace "$namespace" --logs --timeout 5m; then
+  if ! helm test "$release" --namespace "$namespace" --timeout 5m; then
     bad "${base}: helm test failed after upgrade"
+    dump_test_pod "$namespace"
     dump_diagnostics "$namespace" "$release"
   else
     ok "${base}: helm test passed after upgrade"
