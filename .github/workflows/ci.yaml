@@ -454,8 +454,27 @@ jobs:
           base="https://raw.githubusercontent.com/prometheus-operator/prometheus-operator"
           kubectl apply --server-side -f \
             "${base}/${PROMETHEUS_OPERATOR_VERSION}/example/prometheus-operator-crd/monitoring.coreos.com_servicemonitors.yaml"
-          kubectl wait --for=condition=Established --timeout=60s \
-            crd/servicemonitors.monitoring.coreos.com
+          # `kubectl wait --for=condition=...` reads .status.conditions
+          # immediately and errors out if it is still nil rather than treating
+          # that as "not yet" -- which it is for a moment after apply, because
+          # the apiextensions controller writes the status asynchronously. So
+          # poll for the condition instead of waiting on it.
+          crd=servicemonitors.monitoring.coreos.com
+          established=""
+          for _ in $(seq 60); do
+            established="$(kubectl get crd "${crd}" -o \
+              jsonpath='{.status.conditions[?(@.type=="Established")].status}' \
+              2>/dev/null || true)"
+            [ "${established}" = "True" ] && break
+            sleep 2
+          done
+
+          if [ "${established}" != "True" ]; then
+            echo "CRD ${crd} was not Established within 120s" >&2
+            kubectl get crd "${crd}" -o yaml || true
+            exit 1
+          fi
+          echo "CRD ${crd} is Established"
 
       - name: Install, test and upgrade every scenario
         run: .github/ci/install-scenarios.sh .
