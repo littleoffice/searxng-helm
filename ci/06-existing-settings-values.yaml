@@ -1,10 +1,16 @@
 # ci-release: extsettings
-# ci-pre-install: kubectl -n "$NAMESPACE" create secret generic searxng-settings --from-literal=searxng.yml="$(printf 'use_default_settings: true\ngeneral:\n  instance_name: from-existing-secret\n  debug: false\nserver:\n  port: 8080\n  bind_address: "::"\n  limiter: false\n  image_proxy: true\nsearch:\n  safe_search: 1\n  formats: [html]\n')"
+# ci-pre-install: kubectl -n "$NAMESPACE" create secret generic searxng-settings --from-file=ci/06-settings.yml
 #
-# Scenario: settings.yml comes from a Secret the user manages, under a key that
-# is deliberately not called `settings.yml` — the chart projects whatever key is
-# named to the fixed mount path, so a wrong `items.key` here shows up as a
-# CrashLoop rather than passing quietly.
+# Scenario: settings.yml comes from a Secret the user manages. The body lives in
+# ci/06-settings.yml, which `kubectl --from-file` keys by its basename — so the
+# key is `06-settings.yml`, deliberately not `settings.yml`. The chart projects
+# whatever key is named to the fixed mount path, so a wrong `items.key` shows up
+# as a CrashLoop here rather than passing quietly.
+#
+# The body is a separate file rather than a heredoc in the directive above
+# because that directive is read as a single line and yamllint caps lines at
+# 120. `.yml` keeps it out of the `ci/*-values.yaml` glob that ct and the render
+# jobs iterate.
 #
 # What this is meant to catch:
 #   * the chart still rendering (and mounting) its own settings.yml
@@ -32,7 +38,7 @@ networkPolicy:
 
 searxng:
   existingSettingsSecret: searxng-settings
-  existingSettingsSecretKey: searxng.yml
+  existingSettingsSecretKey: 06-settings.yml
 
   # Ignored for the file's contents, but server.* is still what drives the
   # container port and the limiter, so it has to agree with the Secret above.

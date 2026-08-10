@@ -29,21 +29,24 @@ favour of `ct lint --all` / `ct install --upgrade`.
 | `version` | `Chart.yaml`'s version moved forward, if anything that ends up in the package changed. |
 | `render` | Every scenario renders at Kubernetes 1.25 → 1.36 and survives `kubeconform -strict`. 1.25 is the floor `Chart.yaml` claims. |
 | `unit` | `hack/test-credential-consistency.sh`, plus: no generated credential reaches a container's argv or a plain env value, and no init containers appear. |
-| `install` | Five scenarios installed, tested, upgraded in place and re-tested on real clusters — four Kubernetes versions under Helm 4, and 1.36 under Helm 3. |
+| `install` | Six scenarios installed, tested, upgraded in place and re-tested on real clusters — four Kubernetes versions under Helm 4, and 1.36 under Helm 3. |
 | `upgrade-from-released` | The last published version installs and upgrades to the working tree without re-minting credentials. Skips itself before the first release. |
 | `ci` | Aggregate. Point branch protection here, not at the individual jobs. |
 
 ## Scenarios
 
 `ci/*-values.yaml` are install scenarios, not recommended configurations —
-several shrink replica counts to fit a two-core runner. Each may carry
-directives in its leading comment block:
+several shrink replica counts to fit a two-core runner. Files under `ci/` with
+any other name (`ci/06-settings.yml`) are fixtures a scenario feeds to its
+pre-install command, deliberately outside the `*-values.yaml` glob that ct and
+the render jobs iterate. Each scenario may carry directives in its leading
+comment block:
 
 | Directive | Effect |
 | --- | --- |
 | `# ci-release: <name>` | Fix the release name. Needed when the values file hardcodes Secret names derived from it. |
 | `# ci-needs: <feature>` | Declares a cluster prerequisite. Only `prometheus-crds` today, installed unconditionally by the workflow. |
-| `# ci-pre-install: <cmd>` | Runs before `helm install` with `$NAMESPACE` and `$RELEASE` exported. |
+| `# ci-pre-install: <cmd>` | Runs before `helm install` with `$NAMESPACE` and `$RELEASE` exported. Read as a single line, so anything long belongs in a fixture file. |
 
 The upgrade half is the part worth keeping. This chart mints credentials and
 preserves them across upgrades via a cluster `lookup`, which returns nothing

@@ -1,0 +1,22 @@
+# Not a values file — the settings.yml body for ci/06-existing-settings-values.yaml.
+# Deliberately kept out of the *-values.yaml glob so ct and the render jobs do
+# not try to lint it as a values overlay.
+#
+# server.port and server.limiter must agree with searxng.settings.server in the
+# scenario's values file: the chart still reads those from values to build the
+# container port, the probes and limiter.toml.
+use_default_settings: true
+
+general:
+  instance_name: from-existing-secret
+  debug: false
+
+server:
+  port: 8080
+  bind_address: "::"
+  limiter: false
+  image_proxy: true
+
+search:
+  safe_search: 1
+  formats: [html]
