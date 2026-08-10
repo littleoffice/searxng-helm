@@ -5,6 +5,18 @@ on:
     branches: [main]
   push:
     branches: [main]
+  # Daily, for the `scan` job only — every other job is a function of the code
+  # and cannot change while the repository is idle. A CVE disclosure can, and
+  # without this the pinned digests are only ever re-scanned when somebody
+  # happens to push. 04:17 UTC is deliberately off the hour (the top of the
+  # hour is when GitHub's scheduler is most congested) and lands just before
+  # Renovate's 06:00 window, so a newly-failing image and the PR that fixes it
+  # show up in the same morning.
+  #
+  # NOTE: GitHub disables scheduled workflows after 60 days without repository
+  # activity. On a quiet fork this stops silently.
+  schedule:
+    - cron: "17 4 * * *"
   workflow_dispatch:
 
 # Deny by default; each job opts into the read scope it needs. Nothing in this
@@ -41,6 +53,7 @@ env:
 jobs:
   workflows:
     name: Lint workflows
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -89,6 +102,7 @@ jobs:
 
   lint:
     name: Lint chart (helm ${{ matrix.helm }})
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -224,6 +238,10 @@ jobs:
 
   render:
     name: Render + validate (k8s ${{ matrix.kubernetes }})
+    if: github.event_name != 'schedule'
+    # A chart that does not lint cannot render, and a render matrix that fans
+    # out to four Kubernetes versions is not the place to discover that.
+    needs: [lint]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -303,6 +321,8 @@ jobs:
 
   unit:
     name: Render-time assertions
+    if: github.event_name != 'schedule'
+    needs: [lint]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -407,6 +427,19 @@ jobs:
 
   scan:
     name: Security scan
+    # Waits on lint for the same reason as render — this job runs `helm
+    # template` itself, so a broken template surfaces here as a Go template
+    # error rather than as lint saying plainly what is wrong.
+    #
+    # The condition is not simply `needs: [lint]` because on the nightly run
+    # lint is skipped, and GitHub skips a dependent job when its dependency is
+    # skipped unless the `if` uses always() or !cancelled(). So: run when lint
+    # passed, or whenever this is the scheduled image scan, but never after a
+    # cancellation.
+    needs: [lint]
+    if: >-
+      ${{ !cancelled()
+          && (github.event_name == 'schedule' || needs.lint.result == 'success') }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -495,6 +528,11 @@ jobs:
 
   install:
     name: Install (k8s ${{ matrix.kubernetes }}, helm ${{ matrix.helm }})
+    if: github.event_name != 'schedule'
+    # Five kind clusters. Nothing here can pass if the chart does not render,
+    # so this waits rather than burning ~40 minutes of runner time in parallel
+    # with the job that already knows the answer.
+    needs: [render]
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
@@ -587,6 +625,8 @@ jobs:
 
   upgrade-from-released:
     name: Upgrade from the last published release
+    if: github.event_name != 'schedule'
+    needs: [render]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -684,6 +724,13 @@ jobs:
   # One job to point branch protection at. Adding or renaming a job above does
   # not then require editing the ruleset, and a skipped or cancelled dependency
   # cannot masquerade as a pass.
+  #
+  # `skipped` counts as a pass, and now means three different things: a job
+  # that does not apply to this trigger (version is pull_request-only, most
+  # jobs are gated off the nightly), and a job whose tier never ran because
+  # something upstream failed. The third case is still safe — the job that
+  # actually failed reports `failure`, and this gate needs it directly, so the
+  # run cannot come back green on a skipped-because-upstream-broke job.
   ci:
     name: CI
     if: always()
