@@ -17,7 +17,7 @@ type: application
 # CI enforces the bump: a pull request touching Chart.yaml, values.yaml,
 # values.schema.json, templates/ or .helmignore without raising this fails,
 # and once a release exists the number may not go below the published one.
-version: 1.0.0
+version: 1.1.0
 
 # Default container image tag when `image.tag` is empty.
 # NOTE: "latest" is a convenience only. Pin an immutable tag (e.g. 2026.7.22-ef8f6470e)

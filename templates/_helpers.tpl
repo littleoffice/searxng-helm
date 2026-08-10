@@ -514,7 +514,7 @@ Call with (dict "ctx" . "cfg" <the .networkPolicy.ingress map>).
 {{- end -}}
 
 {{/* ------------------------------------------------------------------ */}}
-{{/* Non-root enforcement                                                */}}
+{{/* Security context enforcement                                        */}}
 {{/* ------------------------------------------------------------------ */}}
 
 {{/*
@@ -557,14 +557,69 @@ Call with (dict "name" "<workload>" "pod" <podSecurityContext> "container" <cont
 {{- end -}}
 {{- end -}}
 
-{{/* Run every workload in the release through the check. */}}
-{{- define "searxng.assertNonRootAll" -}}
-{{- include "searxng.assertNonRoot" (dict "name" "searxng" "pod" .Values.podSecurityContext "container" .Values.containerSecurityContext) -}}
+{{/*
+The rest of the hardening the README promises, on the same terms as the root
+check above: refuse to render rather than leave it to an admission controller
+that may not be installed.
+
+Root was singled out first because it is the one people override deliberately.
+These are the ones people lose by accident — a securityContext copied from
+somewhere else, or a block rewritten to add one field and dropped the others.
+Every control in the "Security posture" table is asserted here, so the table
+cannot quietly stop being true.
+
+Call with (dict "name" "<workload>" "pod" <podSecurityContext> "container" <containerSecurityContext>).
+*/}}
+{{- define "searxng.assertHardened" -}}
+{{- $name := .name -}}
+{{- $pod := .pod | default dict -}}
+{{- $ctr := .container | default dict -}}
+{{- include "searxng.assertNonRoot" . -}}
+{{- if $ctr.privileged -}}
+{{- fail (printf "%s: containerSecurityContext.privileged is true. Nothing in this chart needs it." $name) -}}
+{{- end -}}
+{{- if not (hasKey $ctr "allowPrivilegeEscalation") -}}
+{{- fail (printf "%s: containerSecurityContext.allowPrivilegeEscalation must be set explicitly." $name) -}}
+{{- end -}}
+{{- if $ctr.allowPrivilegeEscalation -}}
+{{- fail (printf "%s: containerSecurityContext.allowPrivilegeEscalation is true." $name) -}}
+{{- end -}}
+{{- if not $ctr.readOnlyRootFilesystem -}}
+{{- fail (printf "%s: containerSecurityContext.readOnlyRootFilesystem must be true. Everything these containers write to is a mounted emptyDir." $name) -}}
+{{- end -}}
+{{- $caps := $ctr.capabilities | default dict -}}
+{{- if not (has "ALL" ($caps.drop | default list)) -}}
+{{- fail (printf "%s: containerSecurityContext.capabilities.drop must contain \"ALL\"." $name) -}}
+{{- end -}}
+{{- with $caps.add -}}
+{{- fail (printf "%s: containerSecurityContext.capabilities.add is set (%v). This chart adds no capabilities." $name .) -}}
+{{- end -}}
+{{/*
+A container without a profile of its own inherits the pod's, so this is
+satisfied by either. Checking the container alone would reject a perfectly
+valid config that sets it once at pod level.
+*/}}
+{{- $seccomp := $ctr.seccompProfile | default $pod.seccompProfile | default dict -}}
+{{- if not (has ($seccomp.type | default "") (list "RuntimeDefault" "Localhost")) -}}
+{{- fail (printf "%s: seccompProfile.type must be RuntimeDefault or Localhost, on the pod or the container. Got %q." $name ($seccomp.type | default "<unset>")) -}}
+{{- end -}}
+{{- end -}}
+
+{{/* Run every workload in the release through the checks. */}}
+{{- define "searxng.assertHardenedAll" -}}
+{{- include "searxng.assertHardened" (dict "name" "searxng" "pod" .Values.podSecurityContext "container" .Values.containerSecurityContext) -}}
 {{- if .Values.valkey.enabled -}}
-{{- include "searxng.assertNonRoot" (dict "name" "valkey" "pod" .Values.valkey.podSecurityContext "container" .Values.valkey.containerSecurityContext) -}}
+{{- include "searxng.assertHardened" (dict "name" "valkey" "pod" .Values.valkey.podSecurityContext "container" .Values.valkey.containerSecurityContext) -}}
+{{/*
+The exporter sidecar shares the pod's securityContext but carries its own
+container one, and was not covered by the root check at all.
+*/}}
+{{- if .Values.valkey.metrics.enabled -}}
+{{- include "searxng.assertHardened" (dict "name" "valkey.metrics" "pod" .Values.valkey.podSecurityContext "container" .Values.valkey.metrics.containerSecurityContext) -}}
+{{- end -}}
 {{- end -}}
 {{- if .Values.mcpRelay.enabled -}}
-{{- include "searxng.assertNonRoot" (dict "name" "mcpRelay" "pod" .Values.mcpRelay.podSecurityContext "container" .Values.mcpRelay.containerSecurityContext) -}}
+{{- include "searxng.assertHardened" (dict "name" "mcpRelay" "pod" .Values.mcpRelay.podSecurityContext "container" .Values.mcpRelay.containerSecurityContext) -}}
 {{- end -}}
 {{- end -}}
 

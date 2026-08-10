@@ -1,6 +1,6 @@
 {{- include "searxng.validate" . -}}
 {{- include "searxng.relay.validate" . -}}
-{{- include "searxng.assertNonRootAll" . -}}
+{{- include "searxng.assertHardenedAll" . -}}
 {{/*
 Always a Secret, never a ConfigMap. Engine `tokens`, per-engine `api_key` /
 `password` fields, inline credentials in `outgoing.proxies` and the

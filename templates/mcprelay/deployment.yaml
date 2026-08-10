@@ -1,5 +1,5 @@
 {{- if .Values.mcpRelay.enabled }}
-{{- include "searxng.assertNonRootAll" . -}}
+{{- include "searxng.assertHardenedAll" . -}}
 {{- include "searxng.relay.validate" . -}}
 {{- $r := .Values.mcpRelay }}
 apiVersion: apps/v1

@@ -128,7 +128,7 @@ You will see this in the logs on every start. It is expected — it is the
 | Ingress | deny by default, allow-list via `networkPolicy.ingress.from` |
 | Egress | DNS + Valkey + internet-minus-RFC1918 only |
 | Secrets | `secret_key` and Valkey password in `Secret`s, injected as env |
-| Root | rejected at render time — see below |
+| Enforcement | every row above is asserted at render time — see below |
 
 ### Nothing runs as root
 
@@ -138,6 +138,16 @@ MCP relay `1001`. The chart also **refuses to render** if a values override
 would set any of those to `0`, adds `0` to `supplementalGroups`, or flips
 `runAsNonRoot` off — so a bad override fails at `helm template` rather than
 being rejected by your admission controller later.
+
+The same backstop covers the rest of the table: rendering fails on
+`privileged: true`, on `allowPrivilegeEscalation: true` or unset, on
+`readOnlyRootFilesystem` other than true, on a `capabilities.drop` that does
+not contain `ALL` or any `capabilities.add`, and on a `seccompProfile.type`
+that is neither `RuntimeDefault` nor `Localhost` on the pod or the container.
+Root was worth checking first because it is the control people override
+deliberately; these are the ones that go missing by accident, when a
+`securityContext` block is copied from elsewhere or rewritten to add one field
+and drops the others.
 
 One thing to be clear about, because it looks like root and isn't: files inside
 `ConfigMap`, `Secret` and `emptyDir` mounts are written by the kubelet onto a

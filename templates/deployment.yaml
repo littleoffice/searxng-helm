@@ -1,5 +1,5 @@
 {{- include "searxng.validate" . -}}
-{{- include "searxng.assertNonRootAll" . -}}
+{{- include "searxng.assertHardenedAll" . -}}
 {{- $port := (.Values.searxng.settings.server).port | default 8080 -}}
 {{- $baseUrl := include "searxng.baseUrl" . -}}
 {{- $limiter := include "searxng.limiterEnabled" . -}}
