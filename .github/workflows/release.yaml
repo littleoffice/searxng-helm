@@ -126,8 +126,16 @@ jobs:
           REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
+          # Two logins, because there are two credential stores. `helm registry
+          # login` writes to Helm's own registry config (HELM_REGISTRY_CONFIG,
+          # ~/.config/helm/registry/config.json). actions/attest with
+          # push-to-registry — and oras — read ~/.docker/config.json instead and
+          # fail with "No credentials found for registry ghcr.io" if only Helm
+          # has authenticated.
           printf '%s' "${REGISTRY_TOKEN}" \
             | helm registry login ghcr.io --username "${REGISTRY_USER}" --password-stdin
+          printf '%s' "${REGISTRY_TOKEN}" \
+            | docker login ghcr.io --username "${REGISTRY_USER}" --password-stdin
 
       - name: Push to GHCR as an OCI artifact
         id: oci
