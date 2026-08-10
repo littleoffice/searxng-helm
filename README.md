@@ -1,3 +1,6 @@
+[![Artifact Hub](https://img.shields.io/endpoint?url=https://artifacthub.io/badge/repository/littleoffice-searxng)](https://artifacthub.io/packages/search?repo=littleoffice-searxng)
+
+
 # SearXNG — hardened Helm chart
 
 A production-oriented chart for [SearXNG](https://docs.searxng.org) built around
