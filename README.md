@@ -63,6 +63,32 @@ networkPolicy:
 `ingress.className` is likewise empty by default, meaning "use the cluster's
 default IngressClass". Set it if you run more than one controller.
 
+## Verifying the chart
+
+Every published version is signed keyless with cosign: the certificate is
+bound to the release workflow's OIDC identity and expires in minutes, so
+there is no private key held anywhere and no public key to distribute. The
+identity is the thing you check, not a fingerprint.
+
+```console
+cosign verify ghcr.io/littleoffice/charts/searxng:1.0.0 \
+  --certificate-identity-regexp '^https://github.com/littleoffice/searxng-helm/\.github/workflows/release\.yaml@' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+```
+
+Build provenance is attested as well, for both the OCI artifact and the
+`.tgz` attached to the GitHub Release:
+
+```console
+gh attestation verify oci://ghcr.io/littleoffice/charts/searxng:1.0.0 \
+  --repo littleoffice/searxng-helm
+```
+
+Note that `helm install` does not check either of these. Neither does the
+`--verify` flag, which looks for a PGP-signed `.prov` file that this chart
+does not ship. Run the checks above as a separate step, or enforce them in
+an admission controller.
+
 ## How the "no init container" requirement is met
 
 Most SearXNG charts use an init container because the image's entrypoint wants to

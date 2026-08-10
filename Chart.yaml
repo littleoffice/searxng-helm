@@ -53,8 +53,13 @@ annotations:
       url: https://github.com/littleoffice/searxng-helm
     - name: MCP relay
       url: https://github.com/littleoffice/mcp-searxng-relay
-  artifacthub.io/signKey: |
-    Signed with cosign keyless signing. Verify with:
-    cosign verify ghcr.io/littleoffice/charts/searxng:<version> \
-      --certificate-identity-regexp '^https://github.com/littleoffice/searxng-helm/' \
-      --certificate-oidc-issuer https://token.actions.githubusercontent.com
+    - name: Verifying the signature
+      url: https://github.com/littleoffice/searxng-helm#verifying-the-chart
+  # No artifacthub.io/signKey here on purpose. That annotation is parsed as a
+  # YAML object of exactly two fields, `fingerprint` and `url`, describing a
+  # *PGP* key that signs a `.prov` file; prose in it fails the package with
+  # "invalid annotation: invalid sign key value" and the version never lists.
+  # This chart is signed keyless with cosign, so there is no long-lived public
+  # key to publish. Artifact Hub detects the cosign signature on the GHCR
+  # artifact by itself; the human-readable `cosign verify` invocation lives in
+  # the README, linked above.

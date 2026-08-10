@@ -31,3 +31,8 @@ ct.yaml
 .ct/
 .yamllint.yaml
 renovate.json
+
+# Artifact Hub repository-ownership metadata. It belongs at the root of the
+# published Helm repo (the gh-pages branch, beside index.yaml), not inside
+# the packaged chart.
+artifacthub-repo.yml
