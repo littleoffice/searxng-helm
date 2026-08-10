@@ -271,9 +271,18 @@
             "password": { "type": "string" }
           }
         },
+        "existingSettingsSecret": {
+          "type": "string",
+          "description": "Name of a Secret you manage that holds settings.yml. When set, searxng.settings is not rendered or mounted."
+        },
+        "existingSettingsSecretKey": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Key within existingSettingsSecret to project to /etc/searxng/settings.yml."
+        },
         "settings": {
           "type": "object",
-          "description": "Merged into settings.yml. Free-form: the shape is SearXNG's, not this chart's."
+          "description": "Merged into settings.yml. Free-form: the shape is SearXNG's, not this chart's. Ignored when existingSettingsSecret is set."
         },
         "limiter": {
           "type": "object",

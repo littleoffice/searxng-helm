@@ -1,0 +1,45 @@
+# ci-release: extsettings
+# ci-pre-install: kubectl -n "$NAMESPACE" create secret generic searxng-settings --from-literal=searxng.yml="$(printf 'use_default_settings: true\ngeneral:\n  instance_name: from-existing-secret\n  debug: false\nserver:\n  port: 8080\n  bind_address: "::"\n  limiter: false\n  image_proxy: true\nsearch:\n  safe_search: 1\n  formats: [html]\n')"
+#
+# Scenario: settings.yml comes from a Secret the user manages, under a key that
+# is deliberately not called `settings.yml` — the chart projects whatever key is
+# named to the fixed mount path, so a wrong `items.key` here shows up as a
+# CrashLoop rather than passing quietly.
+#
+# What this is meant to catch:
+#   * the chart still rendering (and mounting) its own settings.yml
+#   * the Deployment carrying a checksum/config for content it cannot see
+#   * server.port drifting between values and the mounted file, which would
+#     leave the probes pointed at a closed port
+
+replicaCount: 1
+
+podDisruptionBudget:
+  enabled: false
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 256Mi
+  limits:
+    memory: 768Mi
+
+valkey:
+  enabled: false
+
+networkPolicy:
+  enabled: false
+
+searxng:
+  existingSettingsSecret: searxng-settings
+  existingSettingsSecretKey: searxng.yml
+
+  # Ignored for the file's contents, but server.* is still what drives the
+  # container port and the limiter, so it has to agree with the Secret above.
+  settings:
+    server:
+      port: 8080
+      limiter: false
+
+tests:
+  enabled: true

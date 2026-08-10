@@ -34,10 +34,10 @@ spec:
       # password, but a username has to be sent.
       basicAuth:
         username:
-          name: {{ include "searxng.settingsObjectName" . }}
+          name: {{ include "searxng.settingsSecretName" . }}
           key: open-metrics-username
         password:
-          name: {{ include "searxng.settingsObjectName" . }}
+          name: {{ include "searxng.settingsSecretName" . }}
           key: open-metrics-password
       {{- with $sm.relabelings }}
       relabelings:

@@ -266,6 +266,59 @@ kubectl -n <ns> get secret <release>-searxng-settings \
 `helm diff` redacts Secret contents by default; pass `--show-secrets` if you
 need to see what a change does to this file.
 
+### Bringing your own settings.yml
+
+The section above only moves the plaintext: `searxng.settings` still lives in a
+values file. To keep it out of values entirely, hand the chart a Secret you
+manage and it will mount that instead of rendering its own:
+
+```console
+kubectl -n <ns> create secret generic searxng-settings \
+  --from-file=settings.yml=./settings.yml
+```
+
+```yaml
+searxng:
+  existingSettingsSecret: searxng-settings
+  existingSettingsSecretKey: settings.yml   # projected to /etc/searxng/settings.yml
+```
+
+The key is projected to the fixed mount path, so it can be named anything —
+useful when the Secret is produced by External Secrets or SealedSecrets and the
+key name is not yours to pick.
+
+What changes when this is set:
+
+| | Chart-rendered | `existingSettingsSecret` |
+| --- | --- | --- |
+| `searxng.settings` | rendered into `<release>-searxng-settings` | ignored |
+| `search.formats: json` when `mcpRelay.enabled` | injected | **yours to add** |
+| `general.open_metrics` when `searxng.metrics.enabled` | injected and generated | **yours to add**, and `searxng.metrics.password` must be set to the same value |
+| Pods roll on config change | yes, via `checksum/config` | no — the chart cannot hash what it does not render |
+
+The chart refuses to render if `searxng.metrics.enabled` is on without
+`searxng.metrics.password`, rather than generating a password that would make
+every scrape 401 against a file it cannot write.
+
+Three keys are still read from values in this mode, because they configure
+objects outside the file rather than the file itself:
+
+- `searxng.settings.server.port` — container port, probes, Service,
+  NetworkPolicy
+- `searxng.settings.server.limiter` / `.public_instance` — whether
+  `limiter.toml` is generated and whether Valkey is required
+
+Set them to match your file. Everything else under `searxng.settings` is
+ignored.
+
+`secret_key` and the Valkey URL are unaffected: they still arrive as
+`$SEARXNG_SECRET` and `$SEARXNG_VALKEY_URL` from their own Secrets and override
+whatever the file says. After editing the Secret:
+
+```console
+kubectl -n <ns> rollout restart deployment/<release>-searxng
+```
+
 ### Custom / additional search providers
 
 With `use_default_settings: true`, entries in `searxng.settings.engines` are

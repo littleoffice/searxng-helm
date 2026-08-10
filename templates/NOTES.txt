@@ -55,6 +55,23 @@ Things worth checking
       ports:
         - {port: 6379, protocol: TCP}
 {{- end }}
+{{- if include "searxng.externalSettings" . }}
+
+[settings.yml] Mounted from Secret/{{ .Values.searxng.existingSettingsSecret }}, key
+  {{ .Values.searxng.existingSettingsSecretKey }}. searxng.settings is NOT rendered and NOT mounted.
+  The chart cannot edit that file, so these are yours to keep correct:
+{{- if .Values.mcpRelay.enabled }}
+    - search.formats must include `json` — the relay cannot read results otherwise
+{{- end }}
+{{- if include "searxng.metricsEnabled" . }}
+    - general.enable_metrics: true and general.open_metrics: <searxng.metrics.password>
+{{- end }}
+    - server.port / server.limiter / server.public_instance are still read from
+      values ({{ (.Values.searxng.settings.server).port | default 8080 }}, limiter {{ if include "searxng.limiterEnabled" . }}on{{ else }}off{{ end }}) and drive the container
+      port, NetworkPolicy and limiter.toml. Keep values and file in sync.
+  Editing that Secret does not roll the pods. Restart with:
+    kubectl -n {{ .Release.Namespace }} rollout restart deployment/{{ include "searxng.fullname" . }}
+{{- end }}
 {{- if and (not .Values.searxng.existingSecret) (not .Values.searxng.secretKey) }}
 
 [secret_key] Auto-generated and stored in Secret/{{ include "searxng.fullname" . }}.
@@ -153,8 +170,13 @@ Things worth checking
 {{- if include "searxng.metricsEnabled" . }}
 
 [metrics] The /metrics basic-auth password was written to
-  Secret/{{ include "searxng.settingsObjectName" . }} as open-metrics-password, and into
-  general.open_metrics inside settings.yml. Read it with:
-    kubectl -n {{ .Release.Namespace }} get secret {{ include "searxng.settingsObjectName" . }} \
+  Secret/{{ include "searxng.settingsSecretName" . }} as open-metrics-password{{ if include "searxng.externalSettings" . }}.{{ else }}, and into
+  general.open_metrics inside settings.yml.{{ end }} Read it with:
+    kubectl -n {{ .Release.Namespace }} get secret {{ include "searxng.settingsSecretName" . }} \
       -o jsonpath='{.data.open-metrics-password}' | base64 -d
+{{- if include "searxng.externalSettings" . }}
+  It is only what the ServiceMonitor sends. SearXNG checks it against
+  general.open_metrics in your own settings.yml, which the chart does not
+  write — the two must match, or every scrape 401s.
+{{- end }}
 {{- end }}

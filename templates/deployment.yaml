@@ -30,6 +30,10 @@ spec:
       annotations:
         # ConfigMaps are mounted with subPath, which never live-reloads, and
         # SearXNG only reads its config at boot. Roll the pods on change.
+        # With searxng.existingSettingsSecret this only covers what the chart
+        # still renders (the open-metrics keys); it cannot hash a file it does
+        # not write, so edits to that Secret will not roll the pods. Restart the
+        # Deployment yourself, or annotate it for a reloader.
         checksum/config: {{ include (print $.Template.BasePath "/settings.yaml") . | sha256sum }}
         {{- if $limiter }}
         checksum/limiter: {{ include (print $.Template.BasePath "/configmap-limiter.yaml") . | sha256sum }}
@@ -166,13 +170,14 @@ spec:
         - name: settings
           # Always a Secret: settings.yml can carry engine tokens, per-engine
           # api_key/password fields and proxy credentials, none of which have an
-          # upstream env-var override. `items` projects only settings.yml so the
-          # open-metrics basic-auth keys are not mounted into the container.
+          # upstream env-var override. `items` projects a single key so the
+          # open-metrics basic-auth keys are not mounted into the container, and
+          # so an external Secret may name its key whatever it likes.
           secret:
             secretName: {{ include "searxng.settingsObjectName" . }}
             defaultMode: 0440
             items:
-              - key: settings.yml
+              - key: {{ include "searxng.settingsObjectKey" . }}
                 path: settings.yml
         {{- if $limiter }}
         - name: limiter

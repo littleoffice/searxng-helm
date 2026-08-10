@@ -302,6 +302,14 @@ producing a pod that cannot start.
 {{- if hasKey .Values.searxng.settings "valkey" -}}
 {{- fail "searxng.settings.valkey must not be set: the connection URL contains the password and is injected from a Secret. Use the valkey.* values instead." -}}
 {{- end -}}
+{{- if include "searxng.externalSettings" . -}}
+{{- if not .Values.searxng.existingSettingsSecretKey -}}
+{{- fail "searxng.existingSettingsSecretKey must not be empty when searxng.existingSettingsSecret is set: the chart has to know which key of your Secret to mount at /etc/searxng/settings.yml." -}}
+{{- end -}}
+{{- if and (include "searxng.metricsEnabled" .) (not .Values.searxng.metrics.password) -}}
+{{- fail "searxng.metrics.enabled is true with searxng.existingSettingsSecret set, but searxng.metrics.password is empty. general.open_metrics has no env-var override, so it can only come from your settings.yml — which the chart cannot read or edit. A generated password would be written into the ServiceMonitor's basicAuth and match nothing, so every scrape would 401. Set general.enable_metrics: true and general.open_metrics: <password> in your own settings.yml and put the same password in searxng.metrics.password." -}}
+{{- end -}}
+{{- end -}}
 {{- if and (include "searxng.limiterEnabled" .) (not .Values.valkey.enabled) (not .Values.valkey.external.url) (not .Values.valkey.external.existingSecret) -}}
 {{- fail "The limiter / public_instance requires Valkey. Set valkey.enabled=true or provide valkey.external.url." -}}
 {{- end -}}
@@ -710,7 +718,7 @@ look on searxng.fullname — the secret_key object — where the key has never
 existed, so the lookup could never hit and a new password was minted on every
 render.
 */}}
-{{- $sec := lookup "v1" "Secret" .Release.Namespace (include "searxng.settingsObjectName" .) -}}
+{{- $sec := lookup "v1" "Secret" .Release.Namespace (include "searxng.settingsSecretName" .) -}}
 {{- if $sec -}}
 {{- if $sec.data -}}
 {{- if hasKey $sec.data "open-metrics-password" -}}
@@ -725,9 +733,47 @@ render.
 {{- index $memo "openMetricsPassword" -}}
 {{- end -}}
 
-{{/* Name of the Secret holding settings.yml. */}}
-{{- define "searxng.settingsObjectName" -}}
+{{/*
+Name of the Secret this chart renders. It holds settings.yml unless
+searxng.existingSettingsSecret is set, and the open-metrics basic-auth keys
+whenever metrics are on — in both cases. Keep lookups and the ServiceMonitor
+pointed here rather than at settingsObjectName: those keys are chart-managed
+even when the settings file is not, and an external Secret has no reason to
+carry them.
+*/}}
+{{- define "searxng.settingsSecretName" -}}
 {{- printf "%s-settings" (include "searxng.fullname" .) -}}
+{{- end -}}
+
+{{/* True when settings.yml comes from a Secret the user manages. */}}
+{{- define "searxng.externalSettings" -}}
+{{- if .Values.searxng.existingSettingsSecret -}}true{{- end -}}
+{{- end -}}
+
+{{/* True when the chart has anything to put in its own settings Secret. */}}
+{{- define "searxng.settingsSecretRendered" -}}
+{{- if or (not (include "searxng.externalSettings" .)) (include "searxng.metricsEnabled" .) -}}true{{- end -}}
+{{- end -}}
+
+{{/* Name of the Secret settings.yml is actually mounted from. */}}
+{{- define "searxng.settingsObjectName" -}}
+{{- if include "searxng.externalSettings" . -}}
+{{- .Values.searxng.existingSettingsSecret -}}
+{{- else -}}
+{{- include "searxng.settingsSecretName" . -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+Key inside that Secret. Projected to the fixed path settings.yml on mount, so
+an external Secret is free to name its key anything.
+*/}}
+{{- define "searxng.settingsObjectKey" -}}
+{{- if include "searxng.externalSettings" . -}}
+{{- .Values.searxng.existingSettingsSecretKey -}}
+{{- else -}}
+settings.yml
+{{- end -}}
 {{- end -}}
 
 {{/* Dedicated scrape identity so Prometheus never uses a human's token. */}}

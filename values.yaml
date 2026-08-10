@@ -222,7 +222,38 @@ searxng:
     # Basic-auth username. SearXNG only checks the password.
     username: "prometheus"
 
+  # --- externally managed settings.yml --------------------------------------
+  # Mount settings.yml from a Secret you manage yourself — SealedSecrets,
+  # External Secrets Operator, SOPS, or a plain `kubectl create secret generic
+  # searxng-settings --from-file=settings.yml`. This is the way to keep engine
+  # api_keys and tokens out of your values file entirely.
+  #
+  # The named key is projected to /etc/searxng/settings.yml, so it can be
+  # called anything.
+  #
+  # When set, `searxng.settings` below is neither rendered nor mounted, and the
+  # chart can no longer edit the file — so what it would normally inject
+  # becomes yours to write:
+  #   * `search.formats` must contain `json` if mcpRelay.enabled
+  #   * `general.enable_metrics: true` plus `general.open_metrics: <password>`
+  #     if searxng.metrics.enabled — and searxng.metrics.password must be set
+  #     to that same password, since it is what the ServiceMonitor sends
+  # A few keys are still read from values even in this mode, because they drive
+  # objects outside the file: `settings.server.port` (container port, probes,
+  # NetworkPolicy) and `settings.server.limiter` / `.public_instance`
+  # (limiter.toml, Valkey requirement). Keep them in sync with your file.
+  #
+  # Unchanged: server.secret_key still arrives as $SEARXNG_SECRET and valkey.url
+  # as $SEARXNG_VALKEY_URL, both overriding whatever the file says.
+  #
+  # !! The chart cannot hash a file it does not render, so changes to your
+  # !! Secret do not roll the pods. `kubectl rollout restart` after an edit, or
+  # !! use a reloader.
+  existingSettingsSecret: ""
+  existingSettingsSecretKey: "settings.yml"
+
   # --- settings.yml ---------------------------------------------------------
+  # Ignored entirely when existingSettingsSecret is set (see above).
   # Rendered verbatim into a Secret and mounted read-only at
   # /etc/searxng/settings.yml. Anything from
   # https://docs.searxng.org/admin/settings/ is valid here.
