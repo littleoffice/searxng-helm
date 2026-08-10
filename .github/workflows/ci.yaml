@@ -19,12 +19,24 @@ env:
   # Helm 4 is the default everywhere. Helm 3 is kept in the matrix because a
   # chart that only installs under one of them is a chart with a support
   # burden nobody wrote down.
+  # renovate: datasource=github-releases depName=helm/helm
   HELM_VERSION: v4.2.3
+  # Pinned by hand on purpose: this is the *legacy* line under test, so it
+  # tracks whatever Helm 3 release the chart still promises to install under,
+  # not the newest thing published.
   HELM_LEGACY_VERSION: v3.21.3
+  # renovate: datasource=github-releases depName=kubernetes-sigs/kind
   KIND_VERSION: v0.32.0
+  # renovate: datasource=github-releases depName=yannh/kubeconform
   KUBECONFORM_VERSION: v0.8.0
+  # renovate: datasource=github-releases depName=rhysd/actionlint
   ACTIONLINT_VERSION: 1.7.12
+  # renovate: datasource=github-releases depName=prometheus-operator/prometheus-operator
   PROMETHEUS_OPERATOR_VERSION: v0.93.0
+  # renovate: datasource=github-releases depName=stackrox/kube-linter
+  KUBE_LINTER_VERSION: v0.8.3
+  # renovate: datasource=github-releases depName=aquasecurity/trivy
+  TRIVY_VERSION: 0.73.0
 
 jobs:
   workflows:
@@ -393,6 +405,94 @@ jobs:
           fi
           echo "no init containers"
 
+  scan:
+    name: Security scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Helm
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: ${{ env.HELM_VERSION }}
+
+      - name: Install kube-linter
+        run: |
+          set -euo pipefail
+          base="https://github.com/stackrox/kube-linter/releases/download"
+          curl -fsSL \
+            "${base}/${KUBE_LINTER_VERSION}/kube-linter-linux.tar.gz" \
+            | tar -xz -C /usr/local/bin kube-linter
+          kube-linter version
+
+      - name: Install Trivy
+        run: |
+          set -euo pipefail
+          base="https://github.com/aquasecurity/trivy/releases/download"
+          curl -fsSL \
+            "${base}/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz" \
+            | tar -xz -C /usr/local/bin trivy
+          trivy --version
+
+      # Rendered here rather than pulled from the `render` job's artifact: this
+      # is one helm invocation per scenario and it keeps the job independent,
+      # so a scan failure is not entangled with a render-matrix failure.
+      - name: Render every scenario
+        run: |
+          set -euo pipefail
+          mkdir -p rendered
+          for f in ci/*-values.yaml examples/values-*.yaml; do
+            helm template searxng . \
+              --namespace searxng \
+              --values "${f}" \
+              > "rendered/$(basename "${f}" .yaml).yaml"
+          done
+          ls -l rendered
+
+      # Policy. The check set is pinned in .kube-linter.yaml and mirrors the
+      # README's security posture table, so a hardening regression fails here
+      # instead of shipping green.
+      - name: kube-linter
+        run: kube-linter lint --config .kube-linter.yaml rendered/
+
+      # Vulnerabilities. kube-linter says nothing about what is *inside* the
+      # images, and values.yaml pins five of them by digest — a pin is only a
+      # security win while something tells you it has gone stale. Renovate
+      # proposes the bumps; this is what makes an overdue one visible.
+      #
+      # Not gating on unfixed CVEs: there is nothing to bump to, so failing on
+      # them would only train people to ignore this job.
+      - name: Trivy — pinned images
+        run: |
+          set -euo pipefail
+          images="$(helm template searxng . \
+            --set mcpRelay.enabled=true \
+            --set valkey.metrics.enabled=true \
+            | grep -oE 'image: "[^"]+"' \
+            | sed 's/image: "//; s/"$//' \
+            | sort -u)"
+
+          echo "${images}"
+          rc=0
+          for image in ${images}; do
+            echo "::group::${image}"
+            trivy image \
+              --severity HIGH,CRITICAL \
+              --ignore-unfixed \
+              --scanners vuln \
+              --exit-code 1 \
+              --no-progress \
+              "${image}" || rc=1
+            echo "::endgroup::"
+          done
+          exit "${rc}"
+
   install:
     name: Install (k8s ${{ matrix.kubernetes }}, helm ${{ matrix.helm }})
     runs-on: ubuntu-latest
@@ -593,6 +693,7 @@ jobs:
       - version
       - render
       - unit
+      - scan
       - install
       - upgrade-from-released
     runs-on: ubuntu-latest

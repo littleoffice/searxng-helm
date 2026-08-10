@@ -1,0 +1,102 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    ":semanticCommitTypeAll(chore)",
+    "helpers:pinGitHubActionDigests"
+  ],
+  "timezone": "Europe/Berlin",
+  "schedule": [
+    "before 6am on monday"
+  ],
+  "prConcurrentLimit": 5,
+  "labels": [
+    "dependencies"
+  ],
+  "osvVulnerabilityAlerts": true,
+  "vulnerabilityAlerts": {
+    "labels": [
+      "security"
+    ],
+    "schedule": [
+      "at any time"
+    ]
+  },
+  "packageRules": [
+    {
+      "description": "Actions are SHA-pinned; group them so one PR moves the whole set, matching what dependabot did before.",
+      "matchManagers": [
+        "github-actions"
+      ],
+      "groupName": "github actions",
+      "semanticCommitType": "ci"
+    },
+    {
+      "description": "CI tooling pinned in workflow env blocks. Grouped: they are only ever used together, and one PR per scanner is noise.",
+      "matchDepNames": [
+        "aquasecurity/trivy",
+        "stackrox/kube-linter",
+        "yannh/kubeconform",
+        "rhysd/actionlint",
+        "kubernetes-sigs/kind",
+        "prometheus-operator/prometheus-operator"
+      ],
+      "groupName": "ci tooling",
+      "semanticCommitType": "ci"
+    },
+    {
+      "description": "Helm itself gates the support matrix. Separate PR so the major line is a deliberate decision, never a group side effect.",
+      "matchDepNames": [
+        "helm/helm"
+      ],
+      "semanticCommitType": "ci",
+      "separateMajorMinor": true
+    },
+    {
+      "description": "Chart images. Each gets its own PR: a bump here changes what users run, and the chart version has to move with it.",
+      "matchFileNames": [
+        "values.yaml"
+      ],
+      "semanticCommitType": "fix",
+      "addLabels": [
+        "chart-image"
+      ]
+    },
+    {
+      "description": "kind node images are digest-pinned against a specific Kubernetes line; never move them across minors automatically.",
+      "matchDepNames": [
+        "kindest/node"
+      ],
+      "matchUpdateTypes": [
+        "major",
+        "minor"
+      ],
+      "enabled": false
+    }
+  ],
+  "customManagers": [
+    {
+      "description": "Image digests in values.yaml. The helm-values manager cannot be used here: it keys off image.tag, and this chart pins by digest with tag left empty so that the digest always wins in searxng.imageRef.",
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/^values\\.yaml$/"
+      ],
+      "matchStrings": [
+        "registry:\\s*(?<registryUrl>\\S+)[\\s\\S]*?repository:\\s*(?<depName>\\S+)[\\s\\S]*?digest:\\s*\"(?<currentDigest>sha256:[0-9a-f]{64})\""
+      ],
+      "currentValueTemplate": "latest",
+      "datasourceTemplate": "docker"
+    },
+    {
+      "description": "Tool versions pinned in workflow env blocks, e.g. `TRIVY_VERSION: 0.73.0`.",
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/^\\.github/workflows/[^/]+\\.yaml$/"
+      ],
+      "matchStrings": [
+        "#\\s*renovate:\\s*datasource=(?<datasource>\\S+)\\s+depName=(?<depName>\\S+)(\\s+versioning=(?<versioning>\\S+))?\\s*\\n\\s*[A-Z_]+:\\s*\"?v?(?<currentValue>[^\"\\s]+)\"?"
+      ],
+      "versioningTemplate": "{{#if versioning}}{{{versioning}}}{{else}}semver{{/if}}"
+    }
+  ]
+}

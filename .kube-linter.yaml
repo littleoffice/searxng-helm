@@ -1,0 +1,85 @@
+# kube-linter configuration.
+# https://docs.kubelinter.io/#/configuring-kubelinter
+#
+# The default check set is deliberately NOT auto-added. kube-linter's defaults
+# encode a generic opinion about workloads; this chart has its own, written
+# down in the README's "Security posture" table, and the two disagree in places
+# where this chart is right (no CPU limit) and in places where it is simply
+# different (two replicas, not three).
+#
+# So the include list below is not "kube-linter's recommendations". It is the
+# security posture table, restated in a form CI can enforce. A check earns its
+# place here by failing when a promise in that table stops being true. Anything
+# that fires on a deliberate design decision is excluded, with the reason given
+# — an excluded check with no reason is a check nobody re-examined.
+checks:
+  doNotAutoAddDefaults: true
+
+  include:
+    # --- The security posture table, check by check --------------------------
+    - run-as-non-root              # "User: 977:977"
+    - privileged-container         # "Capabilities: drop ALL"
+    - privilege-escalation-container
+    - no-read-only-root-fs         # "Root filesystem: read-only"
+    - drop-net-raw-capability
+    - privileged-ports
+
+    # --- Host boundary. Nothing here touches the node. -----------------------
+    - host-network
+    - host-ipc
+    - host-pid
+    - docker-sock
+    - sensitive-host-mounts
+    - unsafe-proc-mount
+    - unsafe-sysctls
+
+    # --- Correctness that has bitten this chart before -----------------------
+    # duplicate-env-var is the one that pays for itself: mcpRelay.config and
+    # searxng.extraEnv are free-form maps rendered after the chart's own env
+    # block, and a duplicate name silently wins over the chart's value. That is
+    # how MCP_AUTH_TOKEN_FILE could be pointed away from the token file.
+    - duplicate-env-var
+    - mismatching-selector
+    - non-existent-service-account
+    - deprecated-service-account-field
+    - use-namespace
+
+    # --- Supply chain --------------------------------------------------------
+    # Digest-pinned refs (repo@sha256:...) pass; a bare :latest or an untagged
+    # image fails. This is what keeps values.yaml pinned once Renovate starts
+    # moving the digests.
+    - latest-tag
+
+    # --- Resource hygiene ----------------------------------------------------
+    # Verified against the rendered default: fires on a missing cpu/memory
+    # *request*, not on the deliberately absent CPU *limit*.
+    - unset-cpu-requirements
+    - unset-memory-requirements
+
+    # --- Credential hygiene --------------------------------------------------
+    # Flags a plaintext value on an env var whose name looks secret-ish. Does
+    # not fire on MCP_AUTH_TOKEN_FILE, which holds a path rather than a token.
+    - env-var-secret
+
+  # --- Deliberately excluded, with reasons -----------------------------------
+  #
+  # read-secret-from-env-var
+  #   Fires on SEARXNG_SECRET, VALKEY_PASSWORD and SEARXNG_TOKENS. All three
+  #   are secretKeyRef, not plaintext — the check objects to the env-var
+  #   mechanism itself, preferring a mounted file. Upstream SearXNG has no
+  #   file-based override for secret_key (that is the whole reason the chart
+  #   injects $SEARXNG_SECRET), so complying is not possible without giving up
+  #   the property that settings.yml never contains the key. Excluded on the
+  #   merits, not for convenience.
+  #
+  # minimum-three-replicas
+  #   replicaCount is 2, and Valkey's primary is necessarily 1.
+  #
+  # no-anti-affinity
+  #   The chart uses topologySpreadConstraints instead, which this check does
+  #   not understand.
+  #
+  # dangling-service / dangling-networkpolicy*
+  #   Both resolve selectors within a single rendered file. The scan runs over
+  #   per-scenario renders where a NetworkPolicy may legitimately point at a
+  #   component that scenario disables.
