@@ -204,11 +204,46 @@ main() {
     > "${OUT_DIR}/report.json"
 
   write_markdown
+  merge_sarif
 
   if [ "${REPORT_ONLY}" -eq 1 ]; then
     return 0
   fi
   return "${exit_code}"
+}
+
+# Code scanning rejects an upload whose SARIF contains several runs sharing a
+# category, and uploading a directory makes the CodeQL CLI combine the
+# per-image files into exactly that. So flatten them into one run here.
+#
+# Rules are deduped by id — the same CVE legitimately appears in more than one
+# image — and every result's ruleIndex is remapped to the merged rules array,
+# because that index is positional and would otherwise point at the wrong CVE.
+# Per-image attribution survives in each result's artifactLocation.
+merge_sarif() {
+  local merged="${OUT_DIR}/trivy.sarif"
+  if ! compgen -G "${OUT_DIR}/sarif/*.sarif" > /dev/null; then
+    log "no per-image SARIF to merge"
+    return 0
+  fi
+  jq -s '
+    [ .[].runs[] ] as $runs
+    | ( [ $runs[] | .tool.driver.rules // [] ] | add // [] ) as $allrules
+    | ( reduce $allrules[] as $r ({seen: {}, out: []};
+          if .seen[$r.id] then . else .seen[$r.id] = true | .out += [$r] end)
+        | .out ) as $rules
+    | ( $rules | to_entries | map({key: .value.id, value: .key}) | from_entries ) as $idx
+    | {
+        "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
+        version: "2.1.0",
+        runs: [{
+          tool: { driver: ( ($runs[0].tool.driver // {name: "Trivy"}) | .rules = $rules ) },
+          results: [ $runs[] | .results[]? | .ruleIndex = ($idx[.ruleId] // 0) ],
+          originalUriBaseIds: ($runs[0].originalUriBaseIds // {}),
+          columnKind: ($runs[0].columnKind // "utf16CodeUnits")
+        }]
+      }' "${OUT_DIR}"/sarif/*.sarif > "${merged}"
+  log "merged $(jq '.runs[0].results | length' "${merged}") results into ${merged}"
 }
 
 write_markdown() {

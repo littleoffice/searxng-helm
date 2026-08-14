@@ -80,6 +80,17 @@ jobs:
       - name: Check scripts
         run: shellcheck --severity=warning .github/ci/*.sh hack/*.sh examples/*.sh
 
+      # renovate.json is only read by Renovate, so a schema error in it is
+      # invisible here: the bot logs a warning nobody sees and carries on with
+      # a partial config, or stops proposing updates entirely. The validator
+      # is the only thing that turns that into a failure someone notices.
+      #
+      # Note what it does *not* catch: a rule that is well-formed but matches
+      # nothing. Use `npx --yes renovate --dry-run=full --platform=local` in a
+      # clone to see which dependencies are actually extracted.
+      - name: Validate renovate.json
+        run: npx --yes --package renovate -- renovate-config-validator --strict
+
       # A file with a shebang that is not executable is broken the moment
       # anyone follows the README and runs it directly. Git tracks the bit and
       # nothing else looks at it, so it stays wrong until someone trips over
@@ -213,7 +224,7 @@ jobs:
           # Before the first tag exists the number is private and may move in
           # any direction — which is what makes renumbering to 1.0.0 for the
           # first publication a legal move rather than a rule to suspend.
-          latest="$(git tag --list 'searxng-*' | sed 's/^searxng-//' | sort -V | tail -n 1)"
+          latest="$(.github/ci/chart-tag.sh --latest)"
           if [ -z "${latest}" ]; then
             echo "Nothing released yet; ${new} is unconstrained."
             echo "Chart version ${old} -> ${new} (pre-release, no published versions)" \
@@ -577,12 +588,16 @@ jobs:
         run: .github/ci/check-appversion.sh
 
       # Runs even when the gate above failed, so the report covers the failure
-      # that caused it rather than stopping at it.
+      # that caused it rather than stopping at it. One merged file with an
+      # explicit category: pointing this at the directory makes the CodeQL CLI
+      # combine the per-image files into several runs sharing a category, which
+      # it rejects.
       - name: Upload findings to code scanning
-        if: always() && hashFiles('scan/sarif/*.sarif') != ''
+        if: always() && hashFiles('scan/trivy.sarif') != ''
         uses: github/codeql-action/upload-sarif@0499de31b99561a6d14a36a5f662c2a54f91beee # v5.1.0
         with:
-          sarif_file: scan/sarif
+          sarif_file: scan/trivy.sarif
+          category: trivy-images
 
       - name: Upload the scan report
         if: always() && hashFiles('scan/report.json') != ''

@@ -53,9 +53,11 @@ fi
 
 # Everything since the last published chart tag. Before the first tag, use the
 # whole history — that is the 1.0.0 case and the full list is correct there.
-last_tag="$(git tag --list 'searxng-*' | sed 's/^searxng-//' | sort -V | tail -n 1)"
-if [ -n "${last_tag}" ] && git rev-parse --verify --quiet "refs/tags/searxng-${last_tag}" >/dev/null; then
-  range="searxng-${last_tag}..HEAD"
+last_version="$(.github/ci/chart-tag.sh --latest)"
+last_tag=""
+[ -n "${last_version}" ] && last_tag="$(.github/ci/chart-tag.sh --resolve "${last_version}")"
+if [ -n "${last_tag}" ]; then
+  range="${last_tag}..HEAD"
 else
   range="HEAD"
 fi
