@@ -236,6 +236,60 @@ jobs:
           echo "Chart version ${old} -> ${new} (last published: ${latest})" \
             >> "$GITHUB_STEP_SUMMARY"
 
+      # An image bump changes what users run without changing the chart's
+      # interface, which is the definition of a patch. Pinning that down here
+      # gives Renovate's per-image PRs one correct answer instead of a
+      # judgement call per PR, and keeps a digest bump from quietly consuming
+      # a minor that a real feature will then want.
+      #
+      # Only fires when values.yaml is the *only* packaged file touched and
+      # only its digest lines moved. A PR that bumps an image and adds a value
+      # is a feature PR and is left alone.
+      - name: A digest-only change must be a patch bump
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+          base="origin/${BASE_REF}"
+
+          if git diff --quiet "${base}...HEAD" -- values.yaml; then
+            echo "values.yaml untouched; no patch-bump constraint."
+            exit 0
+          fi
+
+          changed="$(git diff --name-only "${base}...HEAD" -- \
+            Chart.yaml values.yaml values.schema.json templates .helmignore)"
+          if printf '%s\n' "${changed}" \
+             | grep -qvE '^(Chart\.yaml|values\.yaml)$'; then
+            echo "Not a values-only change; no patch-bump constraint."
+            exit 0
+          fi
+
+          # Every changed line in values.yaml, minus the digest lines. If
+          # anything is left, something other than a pin moved.
+          other="$(git diff -U0 "${base}...HEAD" -- values.yaml \
+            | grep -E '^[+-]' \
+            | grep -Ev '^(\+\+\+|---)' \
+            | grep -Evc '^[+-][[:space:]]*digest:[[:space:]]*"sha256:[0-9a-f]{64}"' \
+            || true)"
+          if [ "${other}" -ne 0 ]; then
+            echo "values.yaml changed beyond image digests; no constraint."
+            exit 0
+          fi
+
+          old="$(git show "${base}:Chart.yaml" | sed -n 's/^version:[[:space:]]*//p' | tr -d '"')"
+          new="$(sed -n 's/^version:[[:space:]]*//p' Chart.yaml | tr -d '"')"
+
+          IFS=. read -r oM om op <<< "${old}"
+          IFS=. read -r nM nm np <<< "${new}"
+          if [ "${oM}" != "${nM}" ] || [ "${om}" != "${nm}" ] \
+             || [ "${np}" != "$((op + 1))" ]; then
+            want="${oM}.${om}.$((op + 1))"
+            echo "::error file=Chart.yaml::Digest-only change: expected ${want}, got ${new}." >&2
+            exit 1
+          fi
+          echo "Digest-only change correctly bumped to ${new}."
+
   render:
     name: Render + validate (k8s ${{ matrix.kubernetes }})
     if: github.event_name != 'schedule'
@@ -444,6 +498,10 @@ jobs:
     timeout-minutes: 20
     permissions:
       contents: read
+      # Findings that cannot be fixed by bumping a pin do not fail this job,
+      # so they need somewhere durable to live. Code scanning dedupes them,
+      # keeps a first-seen date, and survives log expiry.
+      security-events: write
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -496,35 +554,43 @@ jobs:
 
       # Vulnerabilities. kube-linter says nothing about what is *inside* the
       # images, and values.yaml pins five of them by digest — a pin is only a
-      # security win while something tells you it has gone stale. Renovate
-      # proposes the bumps; this is what makes an overdue one visible.
+      # security win while something tells you it has gone stale.
       #
-      # Not gating on unfixed CVEs: there is nothing to bump to, so failing on
-      # them would only train people to ignore this job.
-      - name: Trivy — pinned images
-        run: |
-          set -euo pipefail
-          images="$(helm template searxng . \
-            --set mcpRelay.enabled=true \
-            --set valkey.metrics.enabled=true \
-            | grep -oE 'image: "[^"]+"' \
-            | sed 's/image: "//; s/"$//' \
-            | sort -u)"
+      # This step answers "is the pin current?" and "is the pin safe?" as two
+      # questions and only fails on their intersection: a CVE that is present
+      # in the pinned digest and absent from the digest the tracked tag points
+      # at now. That is the only finding a human here can act on.
+      #
+      # Everything else is reported and annotated but returns 0 — see
+      # .github/ci/scan-images.sh for the full matrix. A CVE with no rebuilt
+      # image behind it is not a thing this repository can fix, and failing on
+      # it would only train people to ignore this job.
+      - name: Image freshness and vulnerabilities
+        id: scan
+        run: .github/ci/scan-images.sh
 
-          echo "${images}"
-          rc=0
-          for image in ${images}; do
-            echo "::group::${image}"
-            trivy image \
-              --severity HIGH,CRITICAL \
-              --ignore-unfixed \
-              --scanners vuln \
-              --exit-code 1 \
-              --no-progress \
-              "${image}" || rc=1
-            echo "::endgroup::"
-          done
-          exit "${rc}"
+      # Reads the OCI labels out of the scan output above, so it costs nothing
+      # extra and runs even when that step failed — a stale appVersion is
+      # exactly what a failing digest scan implies.
+      - name: appVersion matches the pinned image
+        if: always() && hashFiles('scan/raw/*.pinned.json') != ''
+        run: .github/ci/check-appversion.sh
+
+      # Runs even when the gate above failed, so the report covers the failure
+      # that caused it rather than stopping at it.
+      - name: Upload findings to code scanning
+        if: always() && hashFiles('scan/sarif/*.sarif') != ''
+        uses: github/codeql-action/upload-sarif@0499de31b99561a6d14a36a5f662c2a54f91beee # v5.1.0
+        with:
+          sarif_file: scan/sarif
+
+      - name: Upload the scan report
+        if: always() && hashFiles('scan/report.json') != ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: image-scan-${{ github.sha }}
+          path: scan/
+          retention-days: 30
 
   install:
     name: Install (k8s ${{ matrix.kubernetes }}, helm ${{ matrix.helm }})
