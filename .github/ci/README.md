@@ -73,6 +73,46 @@ helm lint --strict . --values ci/04-full-values.yaml
 ./hack/test-credential-consistency.sh .
 ```
 
+## Automated updates
+
+The `scan` job in `ci.yaml` only *detects* that a pinned image digest carries a
+CVE a newer digest already fixes — it fails, but it cannot open the PR that
+fixes it. `renovate.yaml` is what closes that loop.
+
+The loop, end to end:
+
+1. **Renovate** (`renovate.yaml`, self-hosted on a schedule) sees the tracked
+   `:latest` tag resolve to a newer digest and opens a per-image PR rewriting
+   the digest in `values.yaml`.
+2. Its custom manager touches only that digest, so a `postUpgradeTask` on the
+   chart-image rule runs [`bump-chart-version.sh`](bump-chart-version.sh) to
+   raise `Chart.yaml`'s **patch** version in the same branch. Without it the PR
+   would fail the `version` job's "digest-only change must be a patch bump"
+   rule. A container bump is a patch here, never a minor.
+3. `ci.yaml` runs on the PR: `scan` goes green (the CVE is gone), `version`
+   accepts the digest-only + patch shape.
+4. On merge, `release.yaml` publishes the new patch version. The next scheduled
+   scan is green.
+
+Self-hosted rather than the hosted Mend app on purpose: `postUpgradeTasks`
+(step 2) is only available to a self-hosted run, and it keeps the whole flow
+auditable in this repository.
+
+**Prerequisite — `RENOVATE_TOKEN`.** Renovate needs a credential to open PRs,
+read as the repo secret `RENOVATE_TOKEN`. Until it is set, `renovate.yaml` is a
+no-op that logs and exits 0. Use either:
+
+- **A GitHub App** (preferred — least privilege, no personal account attached):
+  install it on this repo with **Contents: read/write** and **Pull requests:
+  read/write**, and store an installation token (or the App id + private key,
+  via the env vars Renovate reads) as `RENOVATE_TOKEN`.
+- **A fine-grained PAT** scoped to this repository with **Contents:
+  read/write** and **Pull requests: read/write**.
+
+`allowedPostUpgradeCommands` is a self-hosted admin setting that cannot live in
+`renovate.json`; it is set in `renovate.yaml` and permits only
+`bump-chart-version.sh`.
+
 ## Publishing
 
 `release.yaml` fires on pushes to `main` that touch packaged content, and is a

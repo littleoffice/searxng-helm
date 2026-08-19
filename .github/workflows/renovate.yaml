@@ -1,0 +1,70 @@
+name: Renovate
+
+# Self-hosted Renovate. The `scan` job in ci.yaml only *detects* that a pinned
+# image digest has a fixable CVE and fails; nothing in this repository opens the
+# PR that fixes it. That is this workflow's job.
+#
+# Run self-hosted rather than via the hosted Mend app so that `postUpgradeTasks`
+# is available: the custom manager in renovate.json rewrites the digest in
+# values.yaml but never touches Chart.yaml, and a digest-only change that does
+# not also bump the chart's patch version fails ci.yaml's `version` job. The
+# chart-image rule runs .github/ci/bump-chart-version.sh to close that gap in
+# the same branch, so Renovate's PR is mergeable and cuts a patch release.
+#
+# PREREQUISITE: this needs a credential to open PRs, stored as the repo secret
+# RENOVATE_TOKEN. Until it exists the run is a no-op. See .github/ci/README.md
+# ("Automated updates") for the exact scopes and setup.
+
+on:
+  schedule:
+    # renovate.json's own `schedule: ["before 6am"]` (Europe/Berlin) still gates
+    # when PRs may open or update; these UTC times only decide when Renovate
+    # runs, and both land before 6am Berlin in winter and summer alike.
+    - cron: "0 1,3 * * *"
+  workflow_dispatch:
+
+# GITHUB_TOKEN is unused — Renovate authenticates with RENOVATE_TOKEN — so this
+# workflow needs no write scope of its own.
+permissions: {}
+
+# A second run must never race the first over the same branches.
+concurrency:
+  group: renovate
+  cancel-in-progress: false
+
+jobs:
+  renovate:
+    name: Run Renovate
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # npx + renovate is the same pattern the CI `workflows` job already uses
+      # for renovate-config-validator, so there is no third-party action to pin
+      # here beyond checkout above.
+      - name: Run Renovate
+        env:
+          RENOVATE_TOKEN: ${{ secrets.RENOVATE_TOKEN }}
+          RENOVATE_PLATFORM: github
+          RENOVATE_REPOSITORIES: ${{ github.repository }}
+          RENOVATE_AUTODISCOVER: "false"
+          # allowedPostUpgradeCommands is a self-hosted admin setting that
+          # cannot live in renovate.json. Only the chart-version bumper is
+          # permitted, matched on its exact path.
+          RENOVATE_ALLOWED_POST_UPGRADE_COMMANDS: '["^\\.github/ci/bump-chart-version\\.sh"]'
+          LOG_LEVEL: info
+        run: |
+          set -euo pipefail
+          if [ -z "${RENOVATE_TOKEN}" ]; then
+            echo "RENOVATE_TOKEN is not set; nothing to do." \
+              "Add it as a repo secret to enable automated updates" \
+              "(see .github/ci/README.md)."
+            exit 0
+          fi
+          npx --yes renovate
