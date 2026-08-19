@@ -41,8 +41,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
-      # Creating the GitHub Release, pushing the tag, and committing the
-      # regenerated index.yaml to gh-pages.
+      # Creating the GitHub Release and its tag.
       contents: write
       # Pushing the chart to GHCR as an OCI artifact.
       packages: write
@@ -58,7 +57,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-          persist-credentials: true
+          persist-credentials: false
 
       - name: Set up Helm
         uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
@@ -73,7 +72,10 @@ jobs:
           set -euo pipefail
           version="$(sed -n 's/^version:[[:space:]]*//p' Chart.yaml | tr -d '"')"
           name="$(sed -n 's/^name:[[:space:]]*//p' Chart.yaml | tr -d '"')"
-          tag="${name}-${version}"
+          # Bare version tag, matching the published 1.0.0/1.1.0/1.2.0 and what
+          # chart-tag.sh resolves. The old "${name}-${version}" scheme never
+          # matched those, so this guard never actually fired.
+          tag="${version}"
 
           {
             echo "version=${version}"
@@ -90,10 +92,10 @@ jobs:
             echo "released=true" >> "$GITHUB_OUTPUT"
           fi
 
-      # chart-releaser walks a directory of chart directories. This chart lives
-      # at the repository root, so it is staged into one. Copying rather than
-      # restructuring the repository keeps `helm install ./searxng-helm`
-      # working for anyone who clones it.
+      # `helm package` needs the chart in its own directory with the changelog
+      # annotation written in. This chart lives at the repository root, so it is
+      # staged into one. Copying rather than restructuring keeps
+      # `helm install ./searxng-helm` working for anyone who clones it.
       - name: Stage the chart
         if: steps.chart.outputs.released == 'true'
         env:
@@ -123,17 +125,6 @@ jobs:
           # Lints after the annotation is written, so a malformed changelog
           # fails here rather than on Artifact Hub's side.
           helm lint "${dest}"
-
-      - name: Publish GitHub Release and update the Helm repo index
-        if: steps.chart.outputs.released == 'true'
-        uses: helm/chart-releaser-action@cae68fefc6b5f367a0275617c9f83181ba54714f # v1.7.0
-        with:
-          charts_dir: .cr-release
-          skip_existing: true
-          pages_branch: gh-pages
-          mark_as_latest: true
-        env:
-          CR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Log in to GHCR
         if: steps.chart.outputs.released == 'true'
@@ -236,6 +227,31 @@ jobs:
             > /dev/null
           echo "signature verifies"
 
+      # OCI is the distribution (this is what Artifact Hub tracks); the GitHub
+      # Release is the human-facing record — changelog, the packaged .tgz, and
+      # (added by the provenance job) the SBOMs and scan report. Created
+      # directly with a bare version tag rather than via chart-releaser, which
+      # is built around a gh-pages classic repo this chart does not publish.
+      # Tolerant of an existing release so a forced re-run re-attaches instead
+      # of failing.
+      - name: Create the GitHub Release
+        if: steps.chart.outputs.released == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.chart.outputs.version }}
+          PACKAGE: ${{ steps.oci.outputs.package }}
+        run: |
+          set -euo pipefail
+          if gh release view "${VERSION}" >/dev/null 2>&1; then
+            gh release upload "${VERSION}" "${PACKAGE}" --clobber
+          else
+            gh release create "${VERSION}" \
+              --target "${GITHUB_SHA}" \
+              --title "searxng ${VERSION}" \
+              --generate-notes \
+              "${PACKAGE}"
+          fi
+
       - name: Upload the package
         if: steps.chart.outputs.released == 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -327,10 +343,10 @@ jobs:
         with:
           subject-path: dist/*
 
-      # chart-releaser already created this release; this adds to it. The tag
-      # is resolved rather than assumed: the published tags are bare versions
-      # while chart-releaser's default template is `<name>-<version>`, so the
-      # scheme in use is whichever one actually exists.
+      # The release job created this release under the bare version tag; this
+      # adds the SBOMs and scan report to it. The tag is resolved through
+      # chart-tag.sh rather than assumed, so releases cut under the older
+      # `<name>-<version>` scheme still resolve.
       - name: Attach to the release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
