@@ -118,12 +118,18 @@ no-op that logs and exits 0. Use either:
 `release.yaml` fires on pushes to `main` that touch packaged content, and is a
 no-op when `Chart.yaml`'s version already has a tag. The first release is
 `1.0.0`; the higher numbers in the git history predate any tag and were never
-installable. It publishes to both:
+installable. It publishes to:
 
-- **`gh-pages`** — a classic Helm repo index, via `chart-releaser`. Requires
-  Pages to be enabled on the `gh-pages` branch once, by hand.
 - **`ghcr.io/<owner>/charts/searxng`** — OCI, signed with cosign keyless and
   carrying a SLSA provenance attestation pushed to the registry alongside it.
+  This is the distribution Artifact Hub tracks.
+- **a GitHub Release** under the bare version tag (e.g. `1.2.1`), created
+  directly (`gh release create`) — the human-facing record carrying the
+  packaged `.tgz`, the changelog, the SBOMs and the release-time scan report.
+
+There is no `gh-pages` classic Helm repo: the chart is consumed over OCI
+(`helm install … oci://ghcr.io/<owner>/charts/searxng`), so `chart-releaser`
+and the Pages index it maintains were dropped.
 
 Verify a published chart:
 

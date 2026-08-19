@@ -6,9 +6,6 @@
     "helpers:pinGitHubActionDigests"
   ],
   "timezone": "Europe/Berlin",
-  "schedule": [
-    "before 6am"
-  ],
   "prConcurrentLimit": 5,
   "labels": [
     "dependencies"
@@ -23,6 +20,13 @@
     ]
   },
   "packageRules": [
+    {
+      "description": "The custom manager below owns values.yaml image digests. helm-values keys off image.tag, which this chart leaves empty, so it cannot update the digest pins and only adds redundant, empty-tag extractions. Disable it.",
+      "matchManagers": [
+        "helm-values"
+      ],
+      "enabled": false
+    },
     {
       "description": "Actions are SHA-pinned; group them so one PR moves the whole set, matching what dependabot did before.",
       "matchManagers": [
@@ -85,14 +89,16 @@
   ],
   "customManagers": [
     {
-      "description": "Image digests in values.yaml. The helm-values manager cannot be used here: it keys off image.tag, and this chart pins by digest with tag left empty so that the digest always wins in searxng.imageRef.",
+      "description": "Image digests in values.yaml. The helm-values manager cannot be used here: it keys off image.tag, and this chart pins by digest with tag left empty so that the digest always wins in searxng.imageRef. packageName is the full registry/repository ref so the docker datasource resolves it directly -- capturing a bare-host registryUrl instead makes Renovate reject it (\"Invalid regex manager registryUrl\") and the digest lookup fails.",
       "customType": "regex",
       "managerFilePatterns": [
         "/^values\\.yaml$/"
       ],
       "matchStrings": [
-        "registry:\\s*(?<registryUrl>\\S+)[\\s\\S]*?repository:\\s*(?<depName>\\S+)[\\s\\S]*?digest:\\s*\"(?<currentDigest>sha256:[0-9a-f]{64})\""
+        "registry:\\s*(?<packageRegistry>\\S+)[\\s\\S]*?repository:\\s*(?<packageRepo>\\S+)[\\s\\S]*?digest:\\s*\"(?<currentDigest>sha256:[0-9a-f]{64})\""
       ],
+      "depNameTemplate": "{{{packageRepo}}}",
+      "packageNameTemplate": "{{{packageRegistry}}}/{{{packageRepo}}}",
       "currentValueTemplate": "latest",
       "datasourceTemplate": "docker"
     },
