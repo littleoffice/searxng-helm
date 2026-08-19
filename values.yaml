@@ -644,7 +644,7 @@ mcpRelay:
     repository: littleoffice/mcp-searxng-relay
     # Upstream publishes vX.Y.Z tags plus `latest`. Pin a version.
     tag: ""
-    digest: "sha256:96c8f7a61e722f391ef536bd716a71abbe24ff987989a9fe85f3fd7ddfb28046"
+    digest: "sha256:e8b8055592741765e35ef3bd0eb943390401e47d9b6a33550404659f04c57c28"
     pullPolicy: IfNotPresent
 
   # Sessions live in memory. With >1 replica a client's session ID is only
