@@ -82,17 +82,26 @@ fixes it. `renovate.yaml` is what closes that loop.
 The loop, end to end:
 
 1. **Renovate** (`renovate.yaml`, self-hosted on a schedule) sees the tracked
-   `:latest` tag resolve to a newer digest and opens a per-image PR rewriting
-   the digest in `values.yaml`.
-2. Its custom manager touches only that digest, so a `postUpgradeTask` on the
-   chart-image rule runs [`bump-chart-version.sh`](bump-chart-version.sh) to
-   raise `Chart.yaml`'s **patch** version in the same branch. Without it the PR
-   would fail the `version` job's "digest-only change must be a patch bump"
-   rule. A container bump is a patch here, never a minor.
+   `:latest` tags resolve to newer digests and opens **one grouped PR**
+   (`groupName: chart images`) rewriting every changed digest in `values.yaml`.
+2. Its custom manager touches only those digests, so a branch-mode
+   `postUpgradeTask` on the chart-image rule runs
+   [`bump-chart-version.sh`](bump-chart-version.sh) **once** for the batch. It
+   raises `Chart.yaml`'s **patch** version (the whole batch is one bump, never
+   one per image) and refreshes `appVersion` from the pinned SearXNG image's
+   version label. Without the patch bump the PR fails the `version` job's
+   "digest-only change must be a patch bump" rule; without the `appVersion`
+   refresh it fails `check-appversion.sh`. A container bump is a patch here,
+   never a minor.
 3. `ci.yaml` runs on the PR: `scan` goes green (the CVE is gone), `version`
-   accepts the digest-only + patch shape.
+   accepts the digest-only + patch shape, and `check-appversion.sh` sees a
+   matching `appVersion`.
 4. On merge, `release.yaml` publishes the new patch version. The next scheduled
    scan is green.
+
+The `appVersion` refresh is best-effort — a registry hiccup leaves it untouched
+rather than failing the PR, and `check-appversion.sh` still catches a genuine
+mismatch in CI.
 
 Self-hosted rather than the hosted Mend app on purpose: `postUpgradeTasks`
 (step 2) is only available to a self-hosted run, and it keeps the whole flow
