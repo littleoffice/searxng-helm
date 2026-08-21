@@ -468,7 +468,7 @@ valkey:
     registry: cgr.dev
     repository: chainguard/valkey
     tag: ""
-    digest: "sha256:144c32eb89666b50d973fd3f84fad8308483c1d77b154c3c3e877f3bc43e3c00"
+    digest: "sha256:4933ef81aa336d51db47abda6142045ba556e491c7c061411c9ac173d1a7eb96"
     pullPolicy: IfNotPresent
 
   # Password is generated and stored in a Secret, then rendered into
