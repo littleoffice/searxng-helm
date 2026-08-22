@@ -17,12 +17,12 @@ type: application
 # CI enforces the bump: a pull request touching Chart.yaml, values.yaml,
 # values.schema.json, templates/ or .helmignore without raising this fails,
 # and once a release exists the number may not go below the published one.
-version: 1.2.1
+version: 1.2.2
 
 # Default container image tag when `image.tag` is empty.
 # NOTE: "latest" is a convenience only. Pin an immutable tag (e.g. 2026.7.22-ef8f6470e)
 # or, better, an image digest via `image.digest` for production.
-appVersion: "2026.8.4-c63835bd2"
+appVersion: "2026.8.22-9fea41204"
 
 kubeVersion: ">=1.25.0-0"
 
