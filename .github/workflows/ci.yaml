@@ -32,7 +32,7 @@ env:
   # chart that only installs under one of them is a chart with a support
   # burden nobody wrote down.
   # renovate: datasource=github-releases depName=helm/helm
-  HELM_VERSION: v4.2.3
+  HELM_VERSION: v4.2.4
   # Pinned by hand on purpose: this is the *legacy* line under test, so it
   # tracks whatever Helm 3 release the chart still promises to install under,
   # not the newest thing published.
