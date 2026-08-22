@@ -625,7 +625,7 @@ tests:
     registry: cgr.dev
     repository: chainguard/curl
     tag: ""
-    digest: "sha256:dc57926eb647d285cc1158653362b74a5603413aaf7984774e2d2834e6ecf9c2"
+    digest: "sha256:2db2b6ec71c4b91fd989f5441902f4872bbc1d1d4bce8c2fb8981eccadc07060"
 
 # -----------------------------------------------------------------------------
 # MCP relay — littleoffice/mcp-searxng-relay
