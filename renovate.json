@@ -57,10 +57,11 @@
       "separateMajorMinor": true
     },
     {
-      "description": "Chart images. Each gets its own PR: a bump here changes what users run, and the chart version has to move with it. postUpgradeTasks makes 'has to' automatic — the custom manager only rewrites the digest, so bump-chart-version.sh raises Chart.yaml's patch in the same branch, or the digest-only PR fails ci.yaml's version job. Allowed via RENOVATE_ALLOWED_POST_UPGRADE_COMMANDS in renovate.yaml.",
+      "description": "Chart images, grouped into one PR: an image bump changes what users run, and the chart version has to move with it. groupName batches every values.yaml digest into a single branch; the branch-mode postUpgradeTask then runs bump-chart-version.sh once, so the whole batch is one chart patch bump (and one appVersion refresh) rather than a bump per image. Without the postUpgradeTask a digest-only PR fails ci.yaml's version job. Allowed via RENOVATE_ALLOWED_POST_UPGRADE_COMMANDS in renovate.yaml.",
       "matchFileNames": [
         "values.yaml"
       ],
+      "groupName": "chart images",
       "semanticCommitType": "fix",
       "addLabels": [
         "chart-image"
