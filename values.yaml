@@ -697,7 +697,9 @@ mcpRelay:
     #
     # Same GitOps caveat as the secret_key: under Argo CD / Flux use
     # existingSecret, whose file you write yourself (see the relay README for
-    # the `identity:token` format).
+    # the `identity:token` format). With existingSecret the chart stops
+    # stamping a checksum for that file — it cannot hash a Secret it does not
+    # write — so `kubectl rollout restart` after editing yours.
     auth:
       identities:
         - name: default

@@ -46,7 +46,10 @@ resources:
 searxng:
   baseUrl: "https://search.ci.invalid/"
   existingSettingsSecret: ci-settings
-  existingSettingsSecretKey: 04-settings.yml
+  # make-secrets.sh substitutes the placeholders in ci/04-settings.yml into a
+  # temp file and names this key explicitly, so the key is `settings.yml` — not
+  # the fixture's basename the way scenarios 01-03 and 06 get it.
+  existingSettingsSecretKey: settings.yml
   # Mirrors server.port in ci/04-settings.yml.
   port: 8080
   metrics:

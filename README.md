@@ -528,7 +528,9 @@ Identities of one instance share that instance's engine scope, so callers that
 must not reach each other's engines need separate instances. Identity names are
 names only: each token is generated into that instance's Secret and preserved
 across upgrades, because a token in a values file is a token in git. Bring your
-own with `auth.existingSecret`, whose Secret holds the `identity:token` file.
+own with `auth.existingSecret`, whose Secret holds the `identity:token` file —
+the chart then stops stamping a `checksum/auth` for it, since it cannot hash a
+Secret it does not write, so `kubectl rollout restart` after editing yours.
 
 Enabling it wires up, per instance, without you doing anything else:
 

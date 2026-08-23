@@ -76,6 +76,51 @@ snapshot_checksums() {
     2>/dev/null | sort
 }
 
+# Read a flat `key: value` out of a values file's `searxng:` block. Enough for
+# the two keys below, which are plain scalars two levels in; anything more would
+# want a YAML parser, and this script deliberately has no dependencies beyond
+# kubectl and helm.
+searxng_value() {
+  sed -n "/^searxng:/,/^[^[:space:]]/p" "$1" \
+    | sed -n "s/^  $2:[[:space:]]*//p" \
+    | tr -d "\"'" | head -n 1
+}
+
+# The chart mounts settings.yml by naming a Secret and a key inside it. Get the
+# key name wrong and the kubelet cannot project it: the pod sits in
+# ContainerCreating and `helm install --wait` burns its whole timeout before
+# saying only "not ready". Ten minutes, five jobs, no useful message. Check it
+# in the first second instead, and say both names.
+check_settings_secret() {
+  local file="$1" namespace="$2" secret key
+  secret="$(searxng_value "$file" existingSettingsSecret)"
+  key="$(searxng_value "$file" existingSettingsSecretKey)"
+
+  # Scenarios that name no Secret here are not this check's business.
+  [ -n "$secret" ] || return 0
+  [ -n "$key" ] || key="settings.yml"
+
+  if ! kubectl -n "$namespace" get secret "$secret" >/dev/null 2>&1; then
+    bad "${base}: values name Secret ${secret}, which does not exist in ${namespace}"
+    return 1
+  fi
+
+  # List the keys and match exactly, rather than asking jsonpath for one key:
+  # these names contain dots, which the two jsonpath forms escape differently,
+  # and a quoting slip here would read as "key missing" and fail a good
+  # scenario.
+  local keys
+  keys="$(kubectl -n "$namespace" get secret "$secret" \
+            -o go-template='{{range $k, $v := .data}}{{$k}}{{"\n"}}{{end}}')"
+
+  if ! printf '%s\n' "$keys" | grep -Fxq "$key"; then
+    bad "${base}: Secret ${secret} has no key ${key} (searxng.existingSettingsSecretKey)"
+    printf '  keys present: %s\n' "$(printf '%s' "$keys" | paste -sd' ' -)" >&2
+    return 1
+  fi
+  return 0
+}
+
 run_scenario() {
   local file="$1"
   local base release namespace pre_install
@@ -94,6 +139,11 @@ run_scenario() {
   if [ -n "$pre_install" ]; then
     printf '  pre-install: %s\n' "$pre_install"
     NAMESPACE="$namespace" RELEASE="$release" bash -c "$pre_install"
+  fi
+
+  if ! check_settings_secret "$file" "$namespace"; then
+    kubectl delete namespace "$namespace" --wait=false >/dev/null 2>&1 || true
+    return
   fi
 
   if ! helm install "$release" "$CHART_ABS" \
