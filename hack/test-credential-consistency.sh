@@ -24,48 +24,70 @@ pass() { printf '  \033[32mPASS\033[0m  %s\n' "$1"; }
 bad()  { printf '  \033[31mFAIL\033[0m  %s\n' "$1"; fail=1; }
 
 # ---------------------------------------------------------------------------
-# 1. SearXNG /metrics basic-auth password.
+# 1. Nothing this chart renders carries a credential the user typed.
 #
-# It is written twice: as the `open-metrics-password` key on the settings
-# Secret (which the ServiceMonitor's basicAuth reads) and as
-# `general.open_metrics` inside settings.yml (which is what SearXNG actually
-# enforces). Two independent `include`s of searxng.openMetricsPassword used to
-# mint two different values.
+# values.yaml has no field that takes secret material: settings.yml, the
+# /metrics basic-auth pair, the relay's engine tokens, its fence key and its
+# /health token all come from Secrets the user manages, and the credentials the
+# chart does own (secret_key, the Valkey password, the relay bearer tokens) are
+# generated straight into Secrets. So the ServiceMonitor's basicAuth must
+# resolve to the Secret the operator named, and no object the chart renders may
+# carry settings.yml.
 # ---------------------------------------------------------------------------
-echo "settings Secret: open-metrics-password == general.open_metrics"
+echo "metrics: basicAuth resolves to the Secret the operator named"
 helm template t "$CHART" \
+  --set searxng.existingSettingsSecret=my-settings \
   --set searxng.metrics.enabled=true \
+  --set searxng.metrics.existingSecret=my-metrics \
+  --set metrics.serviceMonitor.enabled=true \
   --set valkey.enabled=false \
   > /tmp/cc-metrics.yaml
 
-python3 - <<'PY' /tmp/cc-metrics.yaml || bad "open-metrics password disagrees between the Secret key and settings.yml"
+python3 - <<'PY' /tmp/cc-metrics.yaml || bad "the ServiceMonitor's basicAuth does not resolve to searxng.metrics.existingSecret"
 import sys, yaml
 docs = [d for d in yaml.safe_load_all(open(sys.argv[1])) if d]
-sec = next(d for d in docs
-           if d.get("kind") == "Secret" and d["metadata"]["name"].endswith("-settings"))
-key_value = sec["stringData"]["open-metrics-password"]
-in_file = yaml.safe_load(sec["stringData"]["settings.yml"])["general"]["open_metrics"]
-assert key_value, "open-metrics-password key is empty"
-assert key_value == in_file, f"{key_value!r} != {in_file!r}"
+
+sm = next(d for d in docs if d.get("kind") == "ServiceMonitor"
+          and not d["metadata"]["name"].endswith("mcp-relay"))
+auth = next(ep["basicAuth"] for ep in sm["spec"]["endpoints"] if "basicAuth" in ep)
+assert auth["username"] == {"name": "my-metrics", "key": "username"}, auth
+assert auth["password"] == {"name": "my-metrics", "key": "password"}, auth
+
+# The chart must render no object of its own for any of this.
+for d in docs:
+    if d.get("kind") != "Secret":
+        continue
+    body = d.get("stringData") or {}
+    name = d["metadata"]["name"]
+    assert "settings.yml" not in body, f"{name} carries a chart-rendered settings.yml"
+    assert "open-metrics-password" not in body, f"{name} carries a chart-rendered metrics password"
 PY
-[ $fail -eq 0 ] && pass "open-metrics password matches in both places"
+[ $fail -eq 0 ] && pass "basicAuth points at the operator's Secret; the chart renders none of its own"
 
 # ---------------------------------------------------------------------------
 # 2. MCP relay scrape token.
 #
-# Written as `scrape-token` on the relay's scrape Secret (which the
-# ServiceMonitor presents) and as the `prometheus:` line in the relay's token
-# file (which is the only thing the relay authenticates against). Same
-# double-include, same divergence.
+# One generated value has to reach three places that all have to agree:
+#
+#   * `scrape-token` on the relay's scrape Secret, which the ServiceMonitor
+#     presents;
+#   * the `prometheus:` line in the token file, which is what relay images up
+#     to v1.3.0 authenticate /metrics against (metrics.mcpIdentity);
+#   * $MCP_METRICS_TOKEN on the relay container, which is what newer images
+#     authenticate /metrics against instead.
+#
+# Two independent `include`s of searxng.relay.scrapeToken used to mint two
+# different values. Any disagreement here is a silent 401 on every scrape.
 # ---------------------------------------------------------------------------
-echo "relay: scrape-token == the prometheus line in the token file"
+echo "relay: scrape-token == the prometheus line == MCP_METRICS_TOKEN"
 helm template t "$CHART" \
+  --set searxng.existingSettingsSecret=my-settings \
   --set mcpRelay.enabled=true \
   --set mcpRelay.metrics.enabled=true \
   --set valkey.enabled=false \
   > /tmp/cc-relay.yaml
 
-python3 - <<'PY' /tmp/cc-relay.yaml || bad "relay scrape token disagrees between its Secret and the token file"
+python3 - <<'PY' /tmp/cc-relay.yaml || bad "relay scrape token disagrees between its Secret, the token file and MCP_METRICS_TOKEN"
 import sys, yaml
 docs = [d for d in yaml.safe_load_all(open(sys.argv[1])) if d]
 secs = {d["metadata"]["name"]: d for d in docs if d.get("kind") == "Secret"}
@@ -77,34 +99,49 @@ line = next(l for l in tokens["stringData"]["tokens"].splitlines()
 in_file = line.split(":", 1)[1]
 assert token_value, "scrape-token is empty"
 assert token_value == in_file, f"{token_value!r} != {in_file!r}"
+
+# The env var must reference that same Secret and key rather than carrying a
+# second copy of the value -- a literal here would be a credential in the
+# manifest as well as a second thing to keep in step.
+dep = next(d for d in docs if d.get("kind") == "Deployment"
+           and d["metadata"]["name"].endswith("-mcp-relay"))
+env = {e["name"]: e for e in dep["spec"]["template"]["spec"]["containers"][0]["env"]}
+ref = env["MCP_METRICS_TOKEN"]["valueFrom"]["secretKeyRef"]
+assert ref["name"] == scrape["metadata"]["name"], ref
+assert scrape["stringData"][ref["key"]] == token_value, ref
 PY
-[ $fail -eq 0 ] && pass "relay scrape token matches in both places"
+[ $fail -eq 0 ] && pass "scrape token matches in all three places"
 
 # ---------------------------------------------------------------------------
-# 3. The Deployment's checksum/config must hash the settings Secret that was
-#    actually rendered. deployment.yaml re-renders settings.yaml to compute it,
-#    so a non-memoised generated password made the annotation churn on every
-#    upgrade and roll every pod for no reason. Compare two renders of the same
-#    release: everything generated must be stable within a render, so the
-#    annotation must equal itself across the two extractions of one output.
+# 3. The Deployment rolls when a config file the chart *does* render changes,
+#    and carries no checksum for the one it does not. settings.yml comes from a
+#    Secret the chart cannot read, so a checksum for it could only ever hash
+#    the wrong thing -- it used to hash the chart's own settings template,
+#    which stopped meaning anything when that template went away.
 # ---------------------------------------------------------------------------
-echo "deployment: checksum/config is stable within a render"
-python3 - <<'PY' /tmp/cc-metrics.yaml || bad "checksum/config is missing or empty"
+echo "deployment: checksums cover what the chart renders, and nothing else"
+helm template t "$CHART" \
+  --set searxng.existingSettingsSecret=my-settings \
+  --set searxng.limiter.enabled=true \
+  > /tmp/cc-limiter.yaml
+
+python3 - <<'PY' /tmp/cc-limiter.yaml || bad "checksum annotations do not match what the chart renders"
 import sys, yaml
 docs = [d for d in yaml.safe_load_all(open(sys.argv[1])) if d]
 dep = next(d for d in docs if d.get("kind") == "Deployment")
-ann = dep["spec"]["template"]["metadata"]["annotations"]
-assert ann.get("checksum/config"), "checksum/config annotation absent"
+ann = dep["spec"]["template"]["metadata"].get("annotations") or {}
+assert ann.get("checksum/limiter"), "limiter.toml is mounted but has no checksum"
+assert "checksum/config" not in ann, "a checksum survives for a file the chart cannot read"
 PY
-[ $fail -eq 0 ] && pass "checksum/config present"
+[ $fail -eq 0 ] && pass "limiter.toml is hashed; settings.yml is not"
 
 # ---------------------------------------------------------------------------
-# 4. The guard: metrics.existingSecret without auth.existingSecret cannot be
-#    satisfied, and must fail at render time rather than produce a token file
-#    with a prometheus token nobody holds.
+# 4. The guards: combinations that cannot be satisfied must fail at render
+#    time rather than produce a running pod that 401s or CrashLoops.
 # ---------------------------------------------------------------------------
 echo "guard: metrics.existingSecret without auth.existingSecret is rejected"
 if helm template t "$CHART" \
+     --set searxng.existingSettingsSecret=my-settings \
      --set mcpRelay.enabled=true \
      --set mcpRelay.metrics.enabled=true \
      --set mcpRelay.metrics.existingSecret=my-scrape \
@@ -113,5 +150,25 @@ if helm template t "$CHART" \
 else
   pass "render refused"
 fi
+
+echo "guard: no values field accepts secret material"
+for setting in \
+  searxng.secretKey=deadbeef \
+  searxng.metrics.password=deadbeef \
+  valkey.auth.password=deadbeef \
+  valkey.external.url=valkey://:pw@host:6379/0 \
+  'mcpRelay.auth.identities[0].token=deadbeefdeadbeefdeadbeefdeadbeef' \
+  'mcpRelay.searxngTokens.tokens[0]=deadbeef' \
+  mcpRelay.fenceKey.key=deadbeef \
+  mcpRelay.healthToken.token=deadbeefdeadbeefdeadbeefdeadbeef
+do
+  if helm template t "$CHART" \
+       --set searxng.existingSettingsSecret=my-settings \
+       --set mcpRelay.enabled=true \
+       --set "$setting" >/dev/null 2>&1; then
+    bad "the schema accepted ${setting%%=*}, which would put a credential in values"
+  fi
+done
+[ $fail -eq 0 ] && pass "every credential-shaped values key is rejected"
 
 exit $fail

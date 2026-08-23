@@ -1,0 +1,24 @@
+# Not a values file — the settings.yml body most ci/*-values.yaml scenarios
+# mount through searxng.existingSettingsSecret. `.yml` keeps it out of the
+# `ci/*-values.yaml` glob that ct and the render jobs iterate.
+#
+# The chart no longer writes this file, so every scenario has to bring one.
+# server.port and server.limiter must agree with searxng.port and
+# searxng.limiter.enabled in the values file that mounts it: the chart reads
+# those from values to build the container port, the probes, the NetworkPolicy
+# and limiter.toml.
+use_default_settings: true
+
+general:
+  instance_name: from-secret
+  debug: false
+
+server:
+  port: 8080
+  bind_address: "::"
+  limiter: false
+  image_proxy: true
+
+search:
+  safe_search: 0
+  formats: [html]

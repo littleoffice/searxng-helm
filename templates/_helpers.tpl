@@ -170,14 +170,13 @@ value on every call, and several of these are legitimately called more than
 once per render: once to populate the Secret, and again when a Deployment
 re-renders the same template to hash it into a `checksum/` annotation. The two
 copies then disagree. Where the value also lands in two different places — the
-open-metrics password goes into settings.yml *and* into its own key, the relay
-scrape token into the token file *and* into its own Secret — the disagreement
-is a silent authentication failure rather than a visible error.
+relay scrape token goes into the token file *and* into its own Secret — the
+disagreement is a silent authentication failure rather than a visible error.
 
 The key is `__memo` at the root of `.Values` and deliberately not under
-`.Values.searxng`, so `deepCopy .Values.searxng.settings` in
-searxng.settingsYaml cannot pick it up and emit it into settings.yml. Nothing
-in this chart serialises `.Values` wholesale.
+`.Values.searxng`. Nothing in this chart serialises `.Values` wholesale, and
+nothing writes a config file out of values at all any more, but a memo living
+inside a scope that gets copied into an object is a trap worth not setting.
 */}}
 
 {{- define "searxng.secretName" -}}
@@ -198,7 +197,8 @@ secret-key
 
 {{/*
 Resolve the SearXNG secret_key.
-Order: explicit value > value already stored in the cluster > freshly generated.
+Order: value already stored in the cluster > freshly generated. There is no
+"explicit value" step: values.yaml has no field to put a credential in.
 The lookup keeps the key stable across `helm upgrade`. It returns nothing during
 `helm template`/`--dry-run`, so GitOps tooling must use `existingSecret`.
 */}}
@@ -206,7 +206,7 @@ The lookup keeps the key stable across `helm upgrade`. It returns nothing during
 {{- if not (hasKey .Values "__memo") -}}{{- $_ := set .Values "__memo" dict -}}{{- end -}}
 {{- $memo := index .Values "__memo" -}}
 {{- if not (hasKey $memo "secretKey") -}}
-{{- $value := .Values.searxng.secretKey -}}
+{{- $value := "" -}}
 {{- if not $value -}}
 {{- $existing := lookup "v1" "Secret" .Release.Namespace (include "searxng.fullname" .) -}}
 {{- if and $existing $existing.data (hasKey $existing.data "secret-key") -}}
@@ -244,7 +244,7 @@ valkey-password
 {{- if not (hasKey .Values "__memo") -}}{{- $_ := set .Values "__memo" dict -}}{{- end -}}
 {{- $memo := index .Values "__memo" -}}
 {{- if not (hasKey $memo "valkeyPassword") -}}
-{{- $value := .Values.valkey.auth.password -}}
+{{- $value := "" -}}
 {{- if not $value -}}
 {{- $existing := lookup "v1" "Secret" .Release.Namespace (include "searxng.valkey.fullname" .) -}}
 {{- if and $existing $existing.data (hasKey $existing.data "valkey-password") -}}
@@ -266,10 +266,19 @@ valkey-password
 {{/* Derived application settings                                        */}}
 {{/* ------------------------------------------------------------------ */}}
 
+{{/*
+Port SearXNG listens on: `server.port` in the user's settings.yml, mirrored
+here because it drives the container port, the probes and the NetworkPolicy,
+none of which the chart can derive from a file it cannot read.
+*/}}
+{{- define "searxng.serverPort" -}}
+{{- .Values.searxng.port | default 8080 -}}
+{{- end -}}
+
 {{/* True when the limiter (and therefore Valkey) is required. */}}
 {{- define "searxng.limiterEnabled" -}}
-{{- $server := .Values.searxng.settings.server | default dict -}}
-{{- if or $server.limiter $server.public_instance -}}true{{- end -}}
+{{- $l := .Values.searxng.limiter -}}
+{{- if or $l.enabled $l.publicInstance -}}true{{- end -}}
 {{- end -}}
 
 {{/* Public base URL: explicit value, else derived from the first ingress host. */}}
@@ -295,23 +304,31 @@ producing a pod that cannot start.
 {{- if and .Values.searxng.baseUrl (regexMatch "\\$\\(" .Values.searxng.baseUrl) }}
 {{- fail (printf "searxng.baseUrl contains a $(...) reference (%q). This gets expanded by Kubernetes and corrupts the URL. Use a literal base URL such as https://search.example.com/ with no port variable." .Values.searxng.baseUrl) }}
 {{- end }}
-{{- $server := .Values.searxng.settings.server | default dict -}}
-{{- if hasKey $server "secret_key" -}}
-{{- fail "searxng.settings.server.secret_key must not be set: it is injected as $SEARXNG_SECRET from a dedicated Secret, so a copy here would only add a second place to rotate and leak from. Use searxng.secretKey or searxng.existingSecret instead." -}}
+{{/*
+settings.yml is not the chart's to write. Everything it would once have
+rendered from values now has to come from the user's Secret, so the guards
+here are about that file existing and the chart's mirrored copies of it
+agreeing, rather than about what is in it.
+*/}}
+{{- if not .Values.searxng.existingSettingsSecret -}}
+{{- fail "searxng.existingSettingsSecret is empty, so nothing would supply /etc/searxng/settings.yml. This chart does not write that file and does not ship a default for it: it holds engine tokens, api_keys and proxy credentials, and an empty one is not an empty configuration — SearXNG reads settings.yml as a complete config unless it says use_default_settings, so the container would fail on the sections that are missing. Create the Secret and name it here, e.g. `kubectl -n <ns> create secret generic searxng-settings --from-file=settings.yml` with `use_default_settings: true` in that file to start from upstream's defaults." -}}
 {{- end -}}
-{{- if hasKey .Values.searxng.settings "valkey" -}}
-{{- fail "searxng.settings.valkey must not be set: the connection URL contains the password and is injected from a Secret. Use the valkey.* values instead." -}}
-{{- end -}}
-{{- if include "searxng.externalSettings" . -}}
 {{- if not .Values.searxng.existingSettingsSecretKey -}}
-{{- fail "searxng.existingSettingsSecretKey must not be empty when searxng.existingSettingsSecret is set: the chart has to know which key of your Secret to mount at /etc/searxng/settings.yml." -}}
+{{- fail "searxng.existingSettingsSecretKey must not be empty: the chart has to know which key of your Secret to mount at /etc/searxng/settings.yml." -}}
 {{- end -}}
-{{- if and (include "searxng.metricsEnabled" .) (not .Values.searxng.metrics.password) -}}
-{{- fail "searxng.metrics.enabled is true with searxng.existingSettingsSecret set, but searxng.metrics.password is empty. general.open_metrics has no env-var override, so it can only come from your settings.yml — which the chart cannot read or edit. A generated password would be written into the ServiceMonitor's basicAuth and match nothing, so every scrape would 401. Set general.enable_metrics: true and general.open_metrics: <password> in your own settings.yml and put the same password in searxng.metrics.password." -}}
+{{- if hasKey .Values.searxng "settings" -}}
+{{- fail "searxng.settings was removed in chart 2.0.0: settings.yml is no longer rendered from values, so this scope is silently ignored rather than partially applied. Move its contents into the Secret named by searxng.existingSettingsSecret. Three of its keys drive objects outside the file and live on as values in their own right: settings.server.port is now searxng.port, and settings.server.limiter / .public_instance are now searxng.limiter.enabled / .publicInstance." -}}
+{{- end -}}
+{{- if include "searxng.metricsEnabled" . -}}
+{{- if not .Values.searxng.metrics.existingSecret -}}
+{{- fail "searxng.metrics.enabled is true but searxng.metrics.existingSecret is empty. The /metrics password is general.open_metrics in your settings.yml, which this chart does not write and cannot read, so there is nothing for it to generate — and a credential is not something to put in a values file either. Create a Secret holding the basic-auth pair and name it here: `kubectl -n <ns> create secret generic searxng-metrics --from-literal=username=prometheus --from-literal=password=<the same value as general.open_metrics>`." -}}
+{{- end -}}
+{{- if or (not .Values.searxng.metrics.existingSecretUsernameKey) (not .Values.searxng.metrics.existingSecretPasswordKey) -}}
+{{- fail "searxng.metrics.existingSecretUsernameKey and existingSecretPasswordKey must both be set: they are what the ServiceMonitor's basicAuth reads out of your Secret." -}}
 {{- end -}}
 {{- end -}}
-{{- if and (include "searxng.limiterEnabled" .) (not .Values.valkey.enabled) (not .Values.valkey.external.url) (not .Values.valkey.external.existingSecret) -}}
-{{- fail "The limiter / public_instance requires Valkey. Set valkey.enabled=true or provide valkey.external.url." -}}
+{{- if and (include "searxng.limiterEnabled" .) (not .Values.valkey.enabled) (not .Values.valkey.external.existingSecret) -}}
+{{- fail "The limiter / public_instance requires Valkey. Set valkey.enabled=true, or point valkey.external.existingSecret at a Secret holding the connection URL." -}}
 {{- end -}}
 {{- if and .Values.podDisruptionBudget.enabled .Values.podDisruptionBudget.minAvailable .Values.podDisruptionBudget.maxUnavailable -}}
 {{- fail "Set only one of podDisruptionBudget.minAvailable or podDisruptionBudget.maxUnavailable." -}}
@@ -414,13 +431,21 @@ does not invalidate every configured MCP client.
 {{- end -}}
 {{- $out := list "# Managed by Helm. Each line is identity:token." -}}
 {{- range .Values.mcpRelay.auth.identities -}}
-{{- $token := .token -}}
-{{- if not $token -}}
-{{- $token = index $known .name | default (randAlphaNum 64) -}}
-{{- end -}}
+{{/*
+Generated, or carried over from the token file already in the cluster. There is
+no branch for a token supplied in values, because there is no field for one.
+*/}}
+{{- $token := index $known .name | default (randAlphaNum 64) -}}
 {{- $out = append $out (printf "%s:%s" .name $token) -}}
 {{- end -}}
-{{- if .Values.mcpRelay.metrics.enabled -}}
+{{/*
+The scrape credential also goes in the MCP token table when
+metrics.mcpIdentity is set. Relay images up to v1.3.0 gate /metrics on this
+table, so the scraper's token has to be in it; newer ones gate /metrics on
+$MCP_METRICS_TOKEN alone, and dropping the identity is what stops a scraper
+from also being able to call the tools.
+*/}}
+{{- if and .Values.mcpRelay.metrics.enabled .Values.mcpRelay.metrics.mcpIdentity -}}
 {{- $out = append $out (printf "%s:%s" (include "searxng.relay.scrapeIdentity" .) (include "searxng.relay.scrapeToken" .)) -}}
 {{- end -}}
 {{- $_ := set $memo "relayTokenFile" (join "\n" $out) -}}
@@ -434,36 +459,75 @@ Kept separate from the agent token file so read access to one does not imply
 read access to the other.
 */}}
 {{- define "searxng.relay.engineTokensSecretName" -}}
-{{- if .Values.mcpRelay.searxngTokens.existingSecret -}}
 {{- .Values.mcpRelay.searxngTokens.existingSecret -}}
-{{- else -}}
-{{- printf "%s-engine-tokens" (include "searxng.relay.fullname" .) | trunc 63 | trimSuffix "-" -}}
-{{- end -}}
 {{- end -}}
 
 {{- define "searxng.relay.engineTokensSecretKey" -}}
-{{- if .Values.mcpRelay.searxngTokens.existingSecret -}}
 {{- .Values.mcpRelay.searxngTokens.existingSecretKey -}}
-{{- else -}}
-searxng-tokens
-{{- end -}}
 {{- end -}}
 
 {{/* Whether SEARXNG_TOKENS should be injected at all. */}}
 {{- define "searxng.relay.engineTokensEnabled" -}}
-{{- if or .Values.mcpRelay.searxngTokens.existingSecret .Values.mcpRelay.searxngTokens.tokens -}}
+{{- if .Values.mcpRelay.searxngTokens.existingSecret -}}
 true
 {{- end -}}
-{{- end -}}
-
-{{/* Comma-separated token list, as the relay expects SEARXNG_TOKENS. */}}
-{{- define "searxng.relay.engineTokens" -}}
-{{- join "," .Values.mcpRelay.searxngTokens.tokens -}}
 {{- end -}}
 
 {{/* URL of the in-cluster SearXNG service, as the relay should reach it. */}}
 {{- define "searxng.relay.searxngUrl" -}}
 {{- printf "http://%s.%s.svc:%v" (include "searxng.fullname" .) .Release.Namespace .Values.service.port -}}
+{{- end -}}
+
+{{/* ------------------------------------------------------------------ */}}
+{{/* Relay fence signing key                                             */}}
+{{/* ------------------------------------------------------------------ */}}
+
+{{/*
+True when a persistent signing key was supplied. There is one way to supply
+one — a Secret the user manages — so this is just "was a Secret named". The
+chart never renders the key: it is signing material, and a chart that accepted
+it inline would be accepting it in a values file.
+*/}}
+{{- define "searxng.relay.fenceKeyEnabled" -}}
+{{- if .Values.mcpRelay.fenceKey.existingSecret -}}
+true
+{{- end -}}
+{{- end -}}
+
+{{- define "searxng.relay.fenceKeySecretName" -}}
+{{- .Values.mcpRelay.fenceKey.existingSecret -}}
+{{- end -}}
+
+{{- define "searxng.relay.fenceKeySecretKey" -}}
+{{- .Values.mcpRelay.fenceKey.existingSecretKey -}}
+{{- end -}}
+
+{{/*
+Mount directory, not the file. The relay image is FROM scratch, so a subPath
+file mount would have nothing to mount over; a whole directory at a path that
+does not exist in the image is the shape the rest of this chart uses too.
+*/}}
+{{- define "searxng.relay.fenceKeyPath" -}}
+{{- printf "/etc/mcp-fence/%s" (include "searxng.relay.fenceKeySecretKey" .) -}}
+{{- end -}}
+
+{{/* ------------------------------------------------------------------ */}}
+{{/* Relay /health token                                                 */}}
+{{/* ------------------------------------------------------------------ */}}
+
+{{/* Same shape as the fence key: named Secret or nothing. */}}
+{{- define "searxng.relay.healthTokenEnabled" -}}
+{{- if .Values.mcpRelay.healthToken.existingSecret -}}
+true
+{{- end -}}
+{{- end -}}
+
+{{- define "searxng.relay.healthTokenSecretName" -}}
+{{- .Values.mcpRelay.healthToken.existingSecret -}}
+{{- end -}}
+
+{{- define "searxng.relay.healthTokenSecretKey" -}}
+{{- .Values.mcpRelay.healthToken.existingSecretKey -}}
 {{- end -}}
 
 {{/* Validation specific to the relay. */}}
@@ -476,23 +540,21 @@ true
 {{- if contains ":" .name -}}
 {{- fail (printf "mcpRelay: identity name %q must not contain a colon." .name) -}}
 {{- end -}}
-{{- if and .token (lt (len .token) 32) -}}
-{{- fail (printf "mcpRelay: token for identity %q is shorter than the 32 character minimum." .name) -}}
 {{- end -}}
+{{- if and .Values.mcpRelay.metrics.enabled .Values.mcpRelay.metrics.mcpIdentity .Values.mcpRelay.metrics.existingSecret (not .Values.mcpRelay.auth.existingSecret) -}}
+{{- fail "mcpRelay: metrics.existingSecret is set but auth.existingSecret is not, and metrics.mcpIdentity is on. That combination needs the scrape token to appear both in your Secret and on a `prometheus` line in the token file, and the chart cannot read your Secret to copy it there. Either manage both externally (see examples/gen-secrets.sh), let the chart manage both, or set metrics.mcpIdentity=false if your relay image gates /metrics on MCP_METRICS_TOKEN." -}}
 {{- end -}}
-{{- if and .Values.mcpRelay.metrics.enabled .Values.mcpRelay.metrics.existingSecret (not .Values.mcpRelay.auth.existingSecret) -}}
-{{- fail "mcpRelay: metrics.existingSecret is set but auth.existingSecret is not. The relay authenticates every request against one token file, /metrics included, so the scrape token has to appear both in your Secret and on a `prometheus` line in the token file — and the chart cannot read your Secret to copy it there. Either manage both externally (see examples/gen-secrets.sh) or let the chart manage both." -}}
+{{- if and .Values.mcpRelay.fenceKey.existingSecret (not .Values.mcpRelay.fenceKey.existingSecretKey) -}}
+{{- fail "mcpRelay.fenceKey.existingSecretKey must not be empty when fenceKey.existingSecret is set: the chart has to know which key of your Secret to mount." -}}
 {{- end -}}
-{{- if and .Values.mcpRelay.searxngTokens.existingSecret .Values.mcpRelay.searxngTokens.tokens -}}
-{{- fail "mcpRelay.searxngTokens: set either .tokens or .existingSecret, not both." -}}
+{{- if and .Values.mcpRelay.healthToken.existingSecret (not .Values.mcpRelay.healthToken.existingSecretKey) -}}
+{{- fail "mcpRelay.healthToken.existingSecretKey must not be empty when healthToken.existingSecret is set: the chart has to know which key of your Secret to read MCP_HEALTH_TOKEN from." -}}
 {{- end -}}
-{{- range .Values.mcpRelay.searxngTokens.tokens -}}
-{{- if contains "," . -}}
-{{- fail "mcpRelay.searxngTokens.tokens: a token must not contain a comma; the list is joined into a comma-separated SEARXNG_TOKENS." -}}
+{{- if and .Values.mcpRelay.fetch.proxyAll (not .Values.mcpRelay.fetch.proxy) -}}
+{{- fail "mcpRelay.fetch.proxyAll is true but mcpRelay.fetch.proxy is empty. The relay fails startup on that combination — there is nothing to route through. Set fetch.proxy, or turn proxyAll off." -}}
 {{- end -}}
-{{- if ne . (trim .) -}}
-{{- fail "mcpRelay.searxngTokens.tokens: a token must not have leading or trailing whitespace." -}}
-{{- end -}}
+{{- if and .Values.mcpRelay.searxngTokens.existingSecret (not .Values.mcpRelay.searxngTokens.existingSecretKey) -}}
+{{- fail "mcpRelay.searxngTokens.existingSecretKey must not be empty when searxngTokens.existingSecret is set: the chart has to know which key holds the comma-separated token list." -}}
 {{- end -}}
 {{- if and .Values.mcpRelay.ingress.enabled (not .Values.mcpRelay.ingress.hosts) -}}
 {{- fail "mcpRelay.ingress.enabled is true but mcpRelay.ingress.hosts is empty." -}}
@@ -702,78 +764,36 @@ app.kubernetes.io/component: valkey-replica
 
 {{/*
 SearXNG's OpenMetrics endpoint is gated by a password in general.open_metrics.
-There is no environment-variable override for it, so it has to live in the
-settings file. settings.yml is a Secret in all cases, so there is nowhere for
-this to leak to.
+There is no environment-variable override for it, so it can only live in
+settings.yml — a file this chart does not write. The chart therefore never
+holds this credential: it names the Secret the user put the basic-auth pair in
+and lets the ServiceMonitor reference it. searxng.validate refuses metrics
+without one, because a ServiceMonitor with nothing to present 401s on every
+scrape.
 */}}
-{{- define "searxng.openMetricsPassword" -}}
-{{- if not (hasKey .Values "__memo") -}}{{- $_ := set .Values "__memo" dict -}}{{- end -}}
-{{- $memo := index .Values "__memo" -}}
-{{- if not (hasKey $memo "openMetricsPassword") -}}
-{{- $value := .Values.searxng.metrics.password -}}
-{{- if not $value -}}
-{{/*
-Look this up on the settings Secret, which is where it is written. It used to
-look on searxng.fullname — the secret_key object — where the key has never
-existed, so the lookup could never hit and a new password was minted on every
-render.
-*/}}
-{{- $sec := lookup "v1" "Secret" .Release.Namespace (include "searxng.settingsSecretName" .) -}}
-{{- if $sec -}}
-{{- if $sec.data -}}
-{{- if hasKey $sec.data "open-metrics-password" -}}
-{{- $value = index $sec.data "open-metrics-password" | b64dec -}}
-{{- end -}}
-{{- end -}}
-{{- end -}}
-{{- end -}}
-{{- if not $value -}}{{- $value = randAlphaNum 32 -}}{{- end -}}
-{{- $_ := set $memo "openMetricsPassword" $value -}}
-{{- end -}}
-{{- index $memo "openMetricsPassword" -}}
+{{- define "searxng.metricsSecretName" -}}
+{{- .Values.searxng.metrics.existingSecret -}}
 {{- end -}}
 
-{{/*
-Name of the Secret this chart renders. It holds settings.yml unless
-searxng.existingSettingsSecret is set, and the open-metrics basic-auth keys
-whenever metrics are on — in both cases. Keep lookups and the ServiceMonitor
-pointed here rather than at settingsObjectName: those keys are chart-managed
-even when the settings file is not, and an external Secret has no reason to
-carry them.
-*/}}
-{{- define "searxng.settingsSecretName" -}}
-{{- printf "%s-settings" (include "searxng.fullname" .) -}}
+{{- define "searxng.metricsSecretUsernameKey" -}}
+{{- .Values.searxng.metrics.existingSecretUsernameKey -}}
 {{- end -}}
 
-{{/* True when settings.yml comes from a Secret the user manages. */}}
-{{- define "searxng.externalSettings" -}}
-{{- if .Values.searxng.existingSettingsSecret -}}true{{- end -}}
+{{- define "searxng.metricsSecretPasswordKey" -}}
+{{- .Values.searxng.metrics.existingSecretPasswordKey -}}
 {{- end -}}
 
-{{/* True when the chart has anything to put in its own settings Secret. */}}
-{{- define "searxng.settingsSecretRendered" -}}
-{{- if or (not (include "searxng.externalSettings" .)) (include "searxng.metricsEnabled" .) -}}true{{- end -}}
-{{- end -}}
-
-{{/* Name of the Secret settings.yml is actually mounted from. */}}
+{{/* Name of the Secret settings.yml is mounted from. Always the user's. */}}
 {{- define "searxng.settingsObjectName" -}}
-{{- if include "searxng.externalSettings" . -}}
 {{- .Values.searxng.existingSettingsSecret -}}
-{{- else -}}
-{{- include "searxng.settingsSecretName" . -}}
-{{- end -}}
 {{- end -}}
 
 {{/*
 Key inside that Secret. Projected to the fixed path settings.yml on mount, so
-an external Secret is free to name its key anything.
+the Secret is free to name its key anything.
 */}}
 {{- define "searxng.settingsObjectKey" -}}
-{{- if include "searxng.externalSettings" . -}}
 {{- .Values.searxng.existingSettingsSecretKey -}}
-{{- else -}}
-settings.yml
-{{- end -}}
 {{- end -}}
 
 {{/* Dedicated scrape identity so Prometheus never uses a human's token. */}}

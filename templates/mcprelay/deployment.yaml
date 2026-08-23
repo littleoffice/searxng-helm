@@ -25,12 +25,12 @@ spec:
         # The token file is mounted with subPath semantics via a Secret volume;
         # roll the pods when the token set changes.
         checksum/auth: {{ include "searxng.relay.tokenFile" . | sha256sum }}
-        {{- if include "searxng.relay.engineTokensEnabled" . }}
-        # Roll the pods when the engine-token set changes: SEARXNG_TOKENS is
-        # read once at startup, so a Secret edit alone would leave the running
-        # pods presenting the old tokens.
-        checksum/engine-tokens: {{ include "searxng.relay.engineTokens" . | sha256sum }}
-        {{- end }}
+{{/*
+There is deliberately no checksum for the engine tokens: they come from a
+Secret the chart does not render and cannot read, so it has nothing to hash.
+SEARXNG_TOKENS is read once at startup, so `kubectl rollout restart` after
+editing that Secret — the same caveat as settings.yml.
+*/}}
         {{- with .Values.commonAnnotations }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
@@ -47,7 +47,10 @@ spec:
       {{- if .Values.userNamespaces.enabled }}
       hostUsers: false
       {{- end }}
-      terminationGracePeriodSeconds: 30
+      # The relay drains for up to 30s on SIGTERM and exits non-zero if the
+      # window closes with requests still in flight, so 30 here would cut every
+      # rollout's drain short.
+      terminationGracePeriodSeconds: {{ $r.terminationGracePeriodSeconds }}
       {{- with $r.priorityClassName }}
       priorityClassName: {{ . | quote }}
       {{- end }}
@@ -101,6 +104,40 @@ spec:
             - name: FETCH_ALLOWED_CIDRS
               value: {{ join "," . | quote }}
             {{- end }}
+            {{- with $r.fetch.proxy }}
+            # Deliberately not HTTP_PROXY/HTTPS_PROXY: the relay reads this one
+            # only, so an ambient proxy variable cannot redirect fetches.
+            - name: FETCH_PROXY
+              value: {{ . | quote }}
+            {{- if $r.fetch.proxyAll }}
+            - name: FETCH_PROXY_ALL
+              value: "true"
+            {{- end }}
+            {{- end }}
+            {{- if include "searxng.relay.fenceKeyEnabled" . }}
+            # Persistent fence signing key, as a file. Never as an env var: the
+            # value is a private key, and the file form is what survives
+            # `kubectl describe` and a rendered manifest without it.
+            - name: FENCE_SIGNING_KEY_FILE
+              value: {{ include "searxng.relay.fenceKeyPath" . | quote }}
+            {{- end }}
+            {{- if include "searxng.relay.healthTokenEnabled" . }}
+            - name: MCP_HEALTH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "searxng.relay.healthTokenSecretName" . }}
+                  key: {{ include "searxng.relay.healthTokenSecretKey" . }}
+            {{- end }}
+            {{- if $r.metrics.enabled }}
+            # /metrics has its own credential on relay images that gate it
+            # separately; older ones ignore this and gate on the MCP token
+            # table, which metrics.mcpIdentity keeps the same value in.
+            - name: MCP_METRICS_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "searxng.relay.scrapeSecretName" . }}
+                  key: {{ include "searxng.relay.scrapeSecretKey" . }}
+            {{- end }}
             {{- range $k, $v := $r.config }}
             - name: {{ $k }}
               value: {{ $v | quote }}
@@ -122,9 +159,19 @@ spec:
             timeoutSeconds: 5
             failureThreshold: 3
           readinessProbe:
+            {{- if include "searxng.relay.healthTokenEnabled" . }}
+            # /health is gated by a bearer token. A Kubernetes httpGet probe
+            # can only carry a literal header, which would put the token in
+            # this manifest in plain text — so the probe is the relay's own
+            # self-probe instead: it reads $MCP_HEALTH_TOKEN and sends the
+            # header itself, leaving the value in the Secret it came from.
+            exec:
+              command: ["/mcp-searxng-relay", "--healthcheck"]
+            {{- else }}
             httpGet:
               path: /health
               port: http
+            {{- end }}
             initialDelaySeconds: 5
             periodSeconds: 10
             timeoutSeconds: 5
@@ -135,6 +182,11 @@ spec:
             - name: auth
               mountPath: /etc/mcp-auth
               readOnly: true
+            {{- if include "searxng.relay.fenceKeyEnabled" . }}
+            - name: fence-key
+              mountPath: /etc/mcp-fence
+              readOnly: true
+            {{- end }}
             {{- with $r.extraVolumeMounts }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -143,6 +195,15 @@ spec:
           secret:
             secretName: {{ include "searxng.relay.secretName" . }}
             defaultMode: 0400
+        {{- if include "searxng.relay.fenceKeyEnabled" . }}
+        - name: fence-key
+          secret:
+            secretName: {{ include "searxng.relay.fenceKeySecretName" . }}
+            defaultMode: 0400
+            items:
+              - key: {{ include "searxng.relay.fenceKeySecretKey" . }}
+                path: {{ include "searxng.relay.fenceKeySecretKey" . }}
+        {{- end }}
         {{- with $r.extraVolumes }}
         {{- toYaml . | nindent 8 }}
         {{- end }}

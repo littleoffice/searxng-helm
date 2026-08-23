@@ -26,6 +26,14 @@ resources:
 searxng:
   existingSecret: gitops-searxng-secret
   existingSecretKey: secret-key
+  # Emitted by gen-secrets.sh alongside the credentials: settings.yml is one
+  # more object that has to exist before the chart is installed, which is the
+  # whole point of this scenario.
+  existingSettingsSecret: gitops-searxng-settings
+  existingSettingsSecretKey: settings.yml
+  port: 8080
+  limiter:
+    enabled: false
 
 valkey:
   enabled: true

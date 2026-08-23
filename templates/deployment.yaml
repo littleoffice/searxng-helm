@@ -1,6 +1,6 @@
 {{- include "searxng.validate" . -}}
 {{- include "searxng.assertHardenedAll" . -}}
-{{- $port := (.Values.searxng.settings.server).port | default 8080 -}}
+{{- $port := include "searxng.serverPort" . -}}
 {{- $baseUrl := include "searxng.baseUrl" . -}}
 {{- $limiter := include "searxng.limiterEnabled" . -}}
 {{- $valkeyHost := include "searxng.valkey.host" . -}}
@@ -27,14 +27,24 @@ spec:
       {{- include "searxng.selectorLabels" . | nindent 6 }}
   template:
     metadata:
+      {{/*
+      ConfigMaps are mounted with subPath, which never live-reloads, and
+      SearXNG only reads its config at boot, so the pods are rolled by hashing
+      what the chart renders into them.
+
+      settings.yml deliberately has no checksum: it comes from a Secret the
+      chart does not write, and a file it cannot read is a file it cannot
+      hash. Editing that Secret will not roll the pods — restart the
+      Deployment yourself, or annotate it for a reloader. The chart used to
+      hash its own settings template here, which stopped meaning anything once
+      it stopped rendering the file.
+
+      The whole block is conditional because with no limiter, no extra config
+      files and no commonAnnotations there is nothing to write, and a bare
+      `annotations:` key would serialise as null.
+      */}}
+      {{- if or $limiter .Values.searxng.extraConfigFiles .Values.commonAnnotations }}
       annotations:
-        # ConfigMaps are mounted with subPath, which never live-reloads, and
-        # SearXNG only reads its config at boot. Roll the pods on change.
-        # With searxng.existingSettingsSecret this only covers what the chart
-        # still renders (the open-metrics keys); it cannot hash a file it does
-        # not write, so edits to that Secret will not roll the pods. Restart the
-        # Deployment yourself, or annotate it for a reloader.
-        checksum/config: {{ include (print $.Template.BasePath "/settings.yaml") . | sha256sum }}
         {{- if $limiter }}
         checksum/limiter: {{ include (print $.Template.BasePath "/configmap-limiter.yaml") . | sha256sum }}
         {{- end }}
@@ -44,6 +54,7 @@ spec:
         {{- with .Values.commonAnnotations }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
+      {{- end }}
       labels:
         {{- include "searxng.serverLabels" . | nindent 8 }}
     spec:
@@ -116,9 +127,6 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.valkey.external.existingSecret }}
                   key: {{ .Values.valkey.external.existingSecretUrlKey }}
-            {{- else if .Values.valkey.external.url }}
-            - name: SEARXNG_VALKEY_URL
-              value: {{ .Values.valkey.external.url | quote }}
             {{- end }}
             {{- with .Values.searxng.extraEnv }}
             {{- toYaml . | nindent 12 }}

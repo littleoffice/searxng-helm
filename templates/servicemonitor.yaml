@@ -32,13 +32,16 @@ spec:
       honorLabels: {{ $sm.honorLabels }}
       # SearXNG gates /metrics behind HTTP Basic auth; it only checks the
       # password, but a username has to be sent.
+      # Both halves come from the Secret named by searxng.metrics.existingSecret.
+      # The chart renders no credential of its own here: the password has to
+      # equal general.open_metrics in a settings.yml it cannot read.
       basicAuth:
         username:
-          name: {{ include "searxng.settingsSecretName" . }}
-          key: open-metrics-username
+          name: {{ include "searxng.metricsSecretName" . }}
+          key: {{ include "searxng.metricsSecretUsernameKey" . }}
         password:
-          name: {{ include "searxng.settingsSecretName" . }}
-          key: open-metrics-password
+          name: {{ include "searxng.metricsSecretName" . }}
+          key: {{ include "searxng.metricsSecretPasswordKey" . }}
       {{- with $sm.relabelings }}
       relabelings:
         {{- toYaml . | nindent 8 }}

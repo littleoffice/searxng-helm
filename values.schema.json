@@ -259,21 +259,22 @@
       "properties": {
         "baseUrl": { "type": "string" },
         "bindAddress": { "type": "string", "minLength": 1 },
-        "secretKey": { "type": "string" },
         "existingSecret": { "type": "string" },
         "existingSecretKey": { "type": "string" },
         "metrics": {
           "type": "object",
           "additionalProperties": false,
+          "description": "SearXNG /metrics. The basic-auth pair comes from a Secret you manage; its password must equal general.open_metrics in your settings.yml, which the chart neither writes nor reads.",
           "properties": {
             "enabled": { "type": "boolean" },
-            "username": { "type": "string" },
-            "password": { "type": "string" }
+            "existingSecret": { "type": "string" },
+            "existingSecretUsernameKey": { "type": "string" },
+            "existingSecretPasswordKey": { "type": "string" }
           }
         },
         "existingSettingsSecret": {
           "type": "string",
-          "description": "Name of a Secret you manage that holds settings.yml. When set, searxng.settings is not rendered or mounted."
+          "description": "Name of a Secret you manage that holds settings.yml. Required: the chart does not render that file and refuses to render without this."
         },
         "existingSettingsSecretKey": {
           "type": "string",
@@ -281,13 +282,21 @@
           "description": "Key within existingSettingsSecret to project to /etc/searxng/settings.yml."
         },
         "settings": {
-          "type": "object",
-          "description": "Merged into settings.yml. Free-form: the shape is SearXNG's, not this chart's. Ignored when existingSettingsSecret is set."
+          "type": ["object", "null"],
+          "description": "REMOVED in chart 2.0.0. settings.yml is no longer rendered from values; it comes from existingSettingsSecret. Still accepted by the schema only so the render can fail with a migration message instead of a bare 'additional properties' error. server.port is now searxng.port; server.limiter / server.public_instance are now searxng.limiter.enabled / .publicInstance."
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535,
+          "description": "Port SearXNG listens on. Mirrors server.port in your settings.yml, which the chart cannot read; drives the container port, the probes and the NetworkPolicy."
         },
         "limiter": {
           "type": "object",
           "additionalProperties": false,
           "properties": {
+            "enabled": { "type": "boolean", "description": "Mirrors server.limiter in your settings.yml. Gates limiter.toml and makes Valkey mandatory." },
+            "publicInstance": { "type": "boolean", "description": "Mirrors server.public_instance in your settings.yml. Implies the limiter and turns on link_token." },
             "trustedProxies": { "type": "array", "items": { "type": "string" } },
             "passIp": { "type": "array", "items": { "type": "string" } },
             "blockIp": { "type": "array", "items": { "type": "string" } },
@@ -356,7 +365,6 @@
           "additionalProperties": false,
           "properties": {
             "enabled": { "type": "boolean" },
-            "password": { "type": "string" },
             "existingSecret": { "type": "string" },
             "existingSecretPasswordKey": { "type": "string" }
           }
@@ -385,7 +393,6 @@
           "type": "object",
           "additionalProperties": false,
           "properties": {
-            "url": { "type": "string" },
             "existingSecret": { "type": "string" },
             "existingSecretUrlKey": { "type": "string" }
           }
@@ -441,12 +448,7 @@
                 "required": ["name"],
                 "additionalProperties": false,
                 "properties": {
-                  "name": { "type": "string", "minLength": 1 },
-                  "token": {
-                    "type": "string",
-                    "description": "Empty to generate. Otherwise at least 32 characters.",
-                    "pattern": "^(|.{32,})$"
-                  }
+                  "name": { "type": "string", "minLength": 1 }
                 }
               }
             },
@@ -458,7 +460,6 @@
           "type": "object",
           "additionalProperties": false,
           "properties": {
-            "tokens": { "type": "array", "items": { "type": "string" } },
             "existingSecret": { "type": "string" },
             "existingSecretKey": { "type": "string" }
           }
@@ -468,7 +469,9 @@
           "additionalProperties": false,
           "properties": {
             "allowedHosts": { "type": "array", "items": { "type": "string" } },
-            "allowedCIDRs": { "type": "array", "items": { "type": "string" } }
+            "allowedCIDRs": { "type": "array", "items": { "type": "string" } },
+            "proxy": { "type": "string", "description": "Egress proxy for the fetch tool (http, https, socks5, socks5h). Applies only to allowedHosts unless proxyAll is set." },
+            "proxyAll": { "type": "boolean", "description": "Route every fetch through fetch.proxy. Hands the per-IP SSRF policy to the proxy; requires fetch.proxy." }
           }
         },
         "rateLimit": {
@@ -496,9 +499,29 @@
           "properties": {
             "enabled": { "type": "boolean" },
             "existingSecret": { "type": "string" },
+            "existingSecretKey": { "type": "string" },
+            "mcpIdentity": { "type": "boolean", "description": "Also add the scrape credential to the MCP token file as identity `prometheus`. Required by relay images that gate /metrics on the MCP token table (<= v1.3.0); turn off once yours gates it on MCP_METRICS_TOKEN." }
+          }
+        },
+        "fenceKey": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Ed25519 key used to sign <sec:fence> elements, from a Secret you manage. Mounted as a file and passed as FENCE_SIGNING_KEY_FILE. Unset means the relay generates an ephemeral key per process. There is no inline field: it is signing material.",
+          "properties": {
+            "existingSecret": { "type": "string" },
             "existingSecretKey": { "type": "string" }
           }
         },
+        "healthToken": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Bearer token gating GET /health, from a Secret you manage; separate from the MCP tokens. Setting it switches the readiness probe to the relay's own --healthcheck self-probe. No inline field: it is a credential.",
+          "properties": {
+            "existingSecret": { "type": "string" },
+            "existingSecretKey": { "type": "string" }
+          }
+        },
+        "terminationGracePeriodSeconds": { "type": "integer", "minimum": 1 },
         "config": { "type": "object" },
         "extraEnv": { "type": "array", "items": { "type": "object" } },
         "extraVolumes": { "type": "array", "items": { "type": "object" } },

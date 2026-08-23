@@ -37,9 +37,15 @@ favour of `ct lint --all` / `ct install --upgrade`.
 
 `ci/*-values.yaml` are install scenarios, not recommended configurations —
 several shrink replica counts to fit a two-core runner. Files under `ci/` with
-any other name (`ci/06-settings.yml`) are fixtures a scenario feeds to its
-pre-install command, deliberately outside the `*-values.yaml` glob that ct and
-the render jobs iterate. Each scenario may carry directives in its leading
+any other name (`ci/settings.yml`, `ci/04-settings.yml`, `ci/06-settings.yml`)
+are fixtures a scenario feeds to its pre-install command, deliberately outside
+the `*-values.yaml` glob that ct and the render jobs iterate. Every scenario
+needs one of those now: the chart does not render settings.yml, so each has to
+create the Secret holding it before installing.
+
+`.github/ci/upgrade-1x-values.yaml` is the odd one out — 1.x-shaped values used
+only to install the *published* chart in the `upgrade-from-released` job, kept
+outside `ci/` precisely so nothing feeds it to the chart in this tree. Each scenario may carry directives in its leading
 comment block:
 
 | Directive | Effect |

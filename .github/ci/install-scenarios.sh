@@ -65,10 +65,14 @@ snapshot_secrets() {
     2>/dev/null | grep -v 'sh.helm.release' | sort
 }
 
+# The pod-template annotations, which carry every checksum/* the chart renders
+# (limiter.toml, extra config files). There is deliberately no checksum for
+# settings.yml -- it comes from a Secret the chart cannot read -- so this reads
+# the whole map rather than one key, and stays honest as those change.
 snapshot_checksums() {
   local ns="$1"
   kubectl -n "$ns" get deployments,statefulsets \
-    -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.spec.template.metadata.annotations['"'"'checksum/config'"'"']}{"\n"}{end}' \
+    -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.spec.template.metadata.annotations}{"\n"}{end}' \
     2>/dev/null | sort
 }
 

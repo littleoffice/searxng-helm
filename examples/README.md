@@ -4,8 +4,9 @@
 | --- | --- |
 | `gen-secrets.sh` | Generates all Secrets with real random credentials. Prints to stdout. |
 | `secrets.example.yaml` | The same Secrets as annotated placeholders, if you would rather fill them in by hand. |
-| `values-minimal.yaml` | Smallest working install; chart manages the credentials. |
-| `values-config.yaml` | The config-file side — settings.yml, custom engines, limiter.toml, extra files. |
+| `settings.example.yml` | A worked settings.yml, for the Secret the chart mounts. |
+| `values-minimal.yaml` | Smallest working install; chart manages the credentials it can. |
+| `values-config.yaml` | The config-file side — pointing at that Secret, limiter.toml, extra files. |
 | `values-production.yaml` | Everything on, all credentials from Secrets you manage. GitOps-safe. |
 
 ## Quick start
@@ -16,6 +17,11 @@ kubectl create namespace search
 kubectl -n search apply -f secrets.yaml
 helm install searxng ../ -n search -f values-production.yaml
 ```
+
+The Secrets come first because one of them is settings.yml: the chart mounts
+that file but never writes it, and refuses to render without it. `gen-secrets.sh`
+emits a starter — upstream defaults and nothing else — which you are meant to
+replace with your own configuration. `settings.example.yml` is a fuller one.
 
 `gen-secrets.sh` writes only to stdout, so you can pipe it into `kubeseal` or
 `sops` instead of applying it in the clear.
@@ -28,18 +34,24 @@ where Helm collapses the name because the release name already contains
 
 ## Which Secrets do I actually need?
 
-None of them — leave every `existingSecret` empty and the chart generates and
-maintains all of it. You need them when you deploy through Argo CD or Flux,
-because those render with `helm template`, where the chart's cluster lookup
-returns nothing and every credential would be regenerated on each sync.
+Some always, the rest under GitOps. `values.yaml` has no field anywhere that
+takes secret material, so anything the chart cannot generate for itself has to
+arrive as a Secret. What it *can* generate it keeps stable across upgrades with
+a cluster lookup — which returns nothing under Argo CD or Flux, so those need
+the `existingSecret` form for the generated ones too.
 
 | Secret | Values key | Required when |
 | --- | --- | --- |
-| `secret-key` | `searxng.existingSecret` | always, under GitOps |
-| Valkey password **and configs** | `valkey.auth.existingSecret` | `valkey.enabled` |
+| `settings.yml` | `searxng.existingSettingsSecret` | **always** |
+| `/metrics` basic-auth pair | `searxng.metrics.existingSecret` | `searxng.metrics.enabled` |
+| Private-engine tokens | `mcpRelay.searxngTokens.existingSecret` | scoping a relay to private engines |
+| Relay fence signing key | `mcpRelay.fenceKey.existingSecret` | something verifies fence signatures |
+| Relay `/health` token | `mcpRelay.healthToken.existingSecret` | `/health` is reachable beyond the cluster |
+| `secret-key` | `searxng.existingSecret` | generated; always under GitOps |
+| Valkey password **and configs** | `valkey.auth.existingSecret` | generated; always under GitOps |
 | Valkey URL | `valkey.external.existingSecret` | `valkey.enabled: false` |
-| Relay tokens | `mcpRelay.auth.existingSecret` | `mcpRelay.enabled` |
-| Relay scrape token | `mcpRelay.metrics.existingSecret` | `mcpRelay.metrics.enabled` |
+| Relay tokens | `mcpRelay.auth.existingSecret` | generated; always under GitOps |
+| Relay scrape token | `mcpRelay.metrics.existingSecret` | generated; always under GitOps |
 
 The Valkey one is the awkward member of the set: `valkey.auth.existingSecret`
 suppresses the chart's own Valkey Secret, and the config files live in that
@@ -50,23 +62,30 @@ rather than passing it as a CLI flag. `gen-secrets.sh` handles it.
 
 ## Config files
 
-There is no bring-your-own-ConfigMap path. The chart renders them from values
-so the settings file cannot drift out of sync with the environment variables
-it injects alongside it:
+settings.yml is yours: it comes from the Secret named by
+`searxng.existingSettingsSecret`, and the chart neither renders nor reads it.
+Engine `tokens`, per-engine `api_key` fields and `outgoing.proxies` credentials
+have no env-var override upstream and can only live in that file, so keeping it
+out of values keeps them out of Helm entirely.
+
+The two files the chart does render are generated from values, because they
+have to stay in sync with the environment it injects:
 
 | Object | Kind | Source |
 | --- | --- | --- |
-| `<release>-searxng-settings` | Secret | `searxng.settings` |
+| your Secret | Secret | you — `searxng.existingSettingsSecret` |
 | `<release>-searxng-limiter` | ConfigMap | `searxng.limiter`, only when the limiter is on |
 | `<release>-searxng-extra` | ConfigMap | `searxng.extraConfigFiles` |
 
-`settings.yml` is a Secret unconditionally — engine `tokens`, per-engine
-`api_key` fields and `outgoing.proxies` credentials have no env-var override
-upstream and can only live in that file. Do not put credentials in
-`extraConfigFiles`; that one is still a ConfigMap.
+Do not put credentials in `extraConfigFiles`; that one is a ConfigMap.
 
-See `values-config.yaml`. To preview exactly what you will get:
+Because the chart cannot read your settings.yml, three of its keys are mirrored
+in values and have to be kept in step: `server.port` → `searxng.port`, and
+`server.limiter` / `server.public_instance` → `searxng.limiter.enabled` /
+`.publicInstance`.
+
+See `values-config.yaml`. To preview what the chart itself will render:
 
 ```console
-helm template searxng ../ -f values-config.yaml -s templates/settings.yaml
+helm template searxng ../ -f values-config.yaml -s templates/configmap-limiter.yaml
 ```

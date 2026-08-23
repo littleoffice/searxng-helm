@@ -196,13 +196,14 @@ searxng:
   # settings.yml. Kept in its own Secret, separate from the settings Secret, so
   # it can be rotated on its own.
   #
-  # Leave `secretKey` empty to have the chart generate one. It is preserved
-  # across `helm upgrade` via a cluster lookup.
+  # There is no field here to type a key into: a secret in a values file is a
+  # secret in git, a rendered manifest and a release history. Either the chart
+  # generates one into its own Secret and keeps it stable across `helm upgrade`
+  # via a cluster lookup, or you name a Secret you manage.
   #
   # !! GitOps warning: Argo CD / Flux render with `helm template`, where lookup
   # !! returns nothing and the key would be regenerated on every sync — logging
   # !! every user out. Use `existingSecret` in a GitOps setup.
-  secretKey: ""
   existingSecret: ""
   existingSecretKey: "secret-key"
 
@@ -211,40 +212,64 @@ searxng:
   # format, gated by HTTP Basic auth whose password is general.open_metrics.
   #
   # That password has no environment-variable override upstream, so it can only
-  # be supplied through the settings file — which is a Secret in all cases, so
-  # there is nowhere for it to leak to. Enabling this additionally writes
-  # open-metrics-username / open-metrics-password as separate keys on that same
-  # Secret, for the ServiceMonitor's basicAuth to reference.
+  # be supplied through settings.yml — a file this chart does not write. So
+  # there is nothing for the chart to generate and nothing for it to put in a
+  # values file: the ServiceMonitor's basic-auth pair comes from a Secret you
+  # manage, and the password in it must equal general.open_metrics in your
+  # settings.yml. The chart reads neither; it only wires the reference.
+  #
+  #   pw="$(openssl rand -hex 32)"
+  #   kubectl -n <ns> create secret generic searxng-metrics \
+  #     --from-literal=username=prometheus \
+  #     --from-literal=password="$pw"
+  #   # ...and general.open_metrics: "$pw" in your settings.yml.
+  #
+  # SearXNG only checks the password; the username is sent because HTTP Basic
+  # requires one. It lives in the same Secret so the chart has one object to
+  # point at rather than a credential in a Secret and its other half in values.
   metrics:
     enabled: false
-    # Generated and preserved across upgrades when empty.
-    password: ""
-    # Basic-auth username. SearXNG only checks the password.
-    username: "prometheus"
+    existingSecret: ""
+    existingSecretUsernameKey: "username"
+    existingSecretPasswordKey: "password"
 
-  # --- externally managed settings.yml --------------------------------------
-  # Mount settings.yml from a Secret you manage yourself — SealedSecrets,
-  # External Secrets Operator, SOPS, or a plain `kubectl create secret generic
-  # searxng-settings --from-file=settings.yml`. This is the way to keep engine
-  # api_keys and tokens out of your values file entirely.
+  # --- settings.yml ---------------------------------------------------------
+  # settings.yml comes from a Secret you manage, and only from there. The
+  # chart does not carry a copy of it, does not render one, and will not
+  # invent one: with no Secret named here the render is refused.
+  #
+  # That file is the one place engine `tokens`, per-engine `api_key` /
+  # `password` fields, inline credentials in `outgoing.proxies` and
+  # `general.open_metrics` can live — upstream's env-var overrides are a fixed
+  # allowlist that none of them are on. Keeping it out of values means none of
+  # it passes through Helm, a rendered manifest, or a release history.
+  #
+  # Create it however you like — SealedSecrets, External Secrets Operator,
+  # SOPS, or a plain:
+  #   kubectl -n <ns> create secret generic searxng-settings \
+  #     --from-file=settings.yml
   #
   # The named key is projected to /etc/searxng/settings.yml, so it can be
   # called anything.
   #
-  # When set, `searxng.settings` below is neither rendered nor mounted, and the
-  # chart can no longer edit the file — so what it would normally inject
-  # becomes yours to write:
-  #   * `search.formats` must contain `json` if mcpRelay.enabled
+  # The chart cannot read that file, so anything it would once have injected
+  # is yours to write:
+  #   * `search.formats` must contain `json` if mcpRelay.enabled — the relay
+  #     cannot read results otherwise
   #   * `general.enable_metrics: true` plus `general.open_metrics: <password>`
-  #     if searxng.metrics.enabled — and searxng.metrics.password must be set
-  #     to that same password, since it is what the ServiceMonitor sends
-  # A few keys are still read from values even in this mode, because they drive
-  # objects outside the file: `settings.server.port` (container port, probes,
-  # NetworkPolicy) and `settings.server.limiter` / `.public_instance`
-  # (limiter.toml, Valkey requirement). Keep them in sync with your file.
+  #     if searxng.metrics.enabled, matching the password in the Secret named
+  #     by searxng.metrics.existingSecret — that is what the ServiceMonitor
+  #     sends
+  #   * `use_default_settings: true` unless you are writing a complete
+  #     configuration; SearXNG reads the file as a whole one otherwise
   #
-  # Unchanged: server.secret_key still arrives as $SEARXNG_SECRET and valkey.url
-  # as $SEARXNG_VALKEY_URL, both overriding whatever the file says.
+  # And it cannot read the settings that drive objects *outside* the file, so
+  # those are values in their own right below: searxng.port and
+  # searxng.limiter.enabled / .publicInstance. Keep them in step with the
+  # file — a port that disagrees leaves the probes pointed at a closed port.
+  #
+  # Unchanged: server.secret_key still arrives as $SEARXNG_SECRET and
+  # valkey.url as $SEARXNG_VALKEY_URL, both overriding whatever the file says.
   #
   # !! The chart cannot hash a file it does not render, so changes to your
   # !! Secret do not roll the pods. `kubectl rollout restart` after an edit, or
@@ -252,86 +277,26 @@ searxng:
   existingSettingsSecret: ""
   existingSettingsSecretKey: "settings.yml"
 
-  # --- settings.yml ---------------------------------------------------------
-  # Ignored entirely when existingSettingsSecret is set (see above).
-  # Rendered verbatim into a Secret and mounted read-only at
-  # /etc/searxng/settings.yml. Anything from
-  # https://docs.searxng.org/admin/settings/ is valid here.
+  # --- Settings the chart reads for itself ----------------------------------
+  # These mirror keys in your settings.yml. The chart needs them for objects
+  # outside the file and cannot read the file to find them.
   #
-  # It is a Secret rather than a ConfigMap because engine `tokens`, per-engine
-  # `api_key` / `password` fields and inline credentials in `outgoing.proxies`
-  # have no env-var override upstream and can only live in this file. Note that
-  # these values still end up in your values file — keep it out of git, or set
-  # them through a --set on a values file you hold outside the repo.
-  #
-  # Do NOT put server.secret_key here — the chart will refuse to render.
-  # Do NOT put valkey.url here — it is injected from a Secret.
-  settings:
-    use_default_settings: true
-
-    general:
-      instance_name: "SearXNG"
-      debug: false
-      # /metrics and /stats expose engine timing data. Off by default.
-      enable_metrics: false
-      contact_url: false
-      donation_url: false
-      privacypolicy_url: false
-
-    server:
-      port: 8080
-      # Requires Valkey (valkey.enabled or valkey.external.url).
-      limiter: false
-      # Implies limiter + link_token. Only for instances open to the internet.
-      public_instance: false
-      image_proxy: true
-      method: "POST"
-      default_http_headers:
-        X-Content-Type-Options: nosniff
-        X-Robots-Tag: noindex, nofollow
-        Referrer-Policy: no-referrer
-
-    ui:
-      static_use_hash: true
-      infinite_scroll: false
-      query_in_title: false
-
-    search:
-      safe_search: 0
-      autocomplete: ""
-      autocomplete_min: 4
-      default_lang: "auto"
-      formats:
-        - html
-        # Uncomment for Open WebUI / LLM tool use:
-        # - json
-
-    outgoing:
-      request_timeout: 3.0
-      max_request_timeout: 10.0
-      pool_connections: 100
-      pool_maxsize: 20
-      enable_http2: true
-
-    # --- Custom / additional search providers ------------------------------
-    # With use_default_settings: true, entries here are merged into the
-    # built-in engine list by `name`. Set `disabled: false` to enable a
-    # built-in engine, or supply a full definition to add a new one.
-    #
-    # engines:
-    #   - name: wikipedia
-    #     disabled: false
-    #   - name: my gitea
-    #     engine: gitea
-    #     base_url: https://git.example.com
-    #     shortcut: gt
-    #     categories: [it, repos]
-    #     timeout: 5.0
-    engines: []
+  # `server.port` in settings.yml. Drives the container port, the probes and
+  # the NetworkPolicy.
+  port: 8080
 
   # --- limiter.toml ---------------------------------------------------------
-  # Only mounted when settings.server.limiter or server.public_instance is true.
+  # Rendered and mounted only when enabled or publicInstance is set below.
   limiter:
+    # `server.limiter` in your settings.yml. SearXNG itself reads the file, not
+    # this; the chart needs telling because the limiter is what makes Valkey
+    # mandatory and what puts limiter.toml in the pod. Setting it here without
+    # setting it in the file leaves an unused ConfigMap mounted, and the other
+    # way round crashes the container on a missing limiter.toml.
+    enabled: false
+    # `server.public_instance` in your settings.yml. Implies the limiter, and
+    # turns on link_token in limiter.toml.
+    publicInstance: false
     # IPs allowed to set X-Forwarded-For. MUST include your ingress controller's
     # pod network, or every request will be attributed to the controller's IP
     # and the whole instance gets rate-limited as one client.
@@ -475,9 +440,12 @@ valkey:
   # /etc/valkey/valkey.conf (mounted from that Secret) so it never appears in
   # the process list. Generated passwords are alphanumeric so they are safe to
   # embed in the connection URL.
+  # No inline password field, for the same reason as everywhere else: it would
+  # put the credential in your values. Generated into the chart's own Secret,
+  # or bring your own — which must then carry valkey.conf too, see
+  # examples/secrets.example.yaml.
   auth:
     enabled: true
-    password: ""
     existingSecret: ""
     existingSecretPasswordKey: "valkey-password"
 
@@ -535,10 +503,15 @@ valkey:
   priorityClassName: ""
 
   # Point at a Valkey/Redis you already run. Only used when
-  # `valkey.enabled: false`. Full URL form:
-  #   valkey://[[user]:[password]]@host:6379/0
+  # `valkey.enabled: false`.
+  #
+  # The URL carries the password (valkey://[[user]:[password]]@host:6379/0), so
+  # it comes from a Secret rather than from here, and is injected straight into
+  # $SEARXNG_VALKEY_URL without passing through a rendered manifest:
+  #
+  #   kubectl -n <ns> create secret generic valkey-url \
+  #     --from-literal=valkey-url='valkey://:pw@valkey.other.svc:6379/0'
   external:
-    url: ""
     existingSecret: ""
     existingSecretUrlKey: "valkey-url"
 
@@ -634,8 +607,9 @@ tests:
 # HTTP with bearer auth, per-identity audit logging and SSRF-protected fetching.
 # https://github.com/littleoffice/mcp-searxng-relay
 #
-# Enabling this automatically adds `json` to searxng.settings.search.formats —
-# the relay cannot work without it.
+# `search.formats` in your settings.yml must contain `json` — the relay cannot
+# read results otherwise, and the chart cannot add it to a file it does not
+# write.
 mcpRelay:
   enabled: false
 
@@ -656,20 +630,23 @@ mcpRelay:
 
   # --- bearer tokens -------------------------------------------------------
   # Rendered into a Secret and mounted at /etc/mcp-auth/tokens as
-  # `identity:token` lines. Identity is a log-correlation label only.
-  # Tokens must be >= 32 chars; leave `token` empty to have one generated
-  # (preserved across upgrades via cluster lookup — same GitOps caveat as
-  # searxng.secretKey, use existingSecret under Argo CD / Flux).
+  # `identity:token` lines. Identity is a log-correlation label only, so it is
+  # the only half of the pair that appears here: each token is generated into
+  # that Secret and preserved across upgrades via a cluster lookup. Read one
+  # back with `kubectl get secret <release>-searxng-mcp-relay`.
+  #
+  # Same GitOps caveat as the secret_key: under Argo CD / Flux use
+  # existingSecret, whose file you write yourself (see the relay README for the
+  # `identity:token` format).
   auth:
     identities:
       - name: default
-        token: ""
     existingSecret: ""
     existingSecretKey: "tokens"
 
   # --- SearXNG private-engine tokens ---------------------------------------
   # Forwarded verbatim as the `tokens` search parameter on every query. An
-  # engine carrying a `tokens:` list under searxng.settings.engines is hidden
+  # engine carrying a `tokens:` list in your settings.yml is hidden
   # from, and unusable by, any caller that does not present one of them:
   # https://docs.searxng.org/admin/settings/settings_engines.html#private-engines-tokens
   #
@@ -685,14 +662,16 @@ mcpRelay:
   # Pair each token with `disabled: true` on the engine, or it fires on every
   # ordinary web search. Explicitly naming an engine still works when disabled.
   #
-  #   searxngTokens:
-  #     tokens:
-  #       - ENGINE-TOKEN-A
+  # These are engine credentials out of your settings.yml, so the chart has
+  # neither a copy to render nor a way to generate them — and they are not
+  # going in a values file. Put them in a Secret, comma-separated, and name it:
   #
-  # Rendered into its own Secret (<release>-searxng-mcp-relay-engine-tokens)
-  # rather than the agent token file, so the two can have different readers.
+  #   kubectl -n <ns> create secret generic relay-engine-tokens \
+  #     --from-literal=searxng-tokens='ENGINE-TOKEN-A,ENGINE-TOKEN-B'
+  #
+  # Its own Secret rather than the agent token file, so the two can have
+  # different readers.
   searxngTokens:
-    tokens: []
     existingSecret: ""
     existingSecretKey: "searxng-tokens"
 
@@ -703,6 +682,22 @@ mcpRelay:
   fetch:
     allowedHosts: []
     allowedCIDRs: []
+
+    # Egress proxy for the fetch tool (http, https, socks5, socks5h). The relay
+    # reads this one deliberately rather than HTTP_PROXY/HTTPS_PROXY, so it
+    # cannot be turned on by an ambient environment variable.
+    #
+    # On its own it applies ONLY to hosts on allowedHosts above. Set proxyAll
+    # to route every fetch through it, for networks with no direct egress —
+    # that hands the per-IP SSRF policy to the proxy, so allowedCIDRs and the
+    # relay's public-IP check stop applying. proxyAll without proxy fails to
+    # render.
+    #
+    # !! A proxy on a private address is blocked by the relay's own
+    # !! NetworkPolicy, whose internet rule excludes private ranges. Add a rule
+    # !! under mcpRelay.networkPolicy.egress.extra pointing at it.
+    proxy: ""
+    proxyAll: false
 
   rateLimit:
     # Per-caller requests/second. 0 disables.
@@ -720,10 +715,64 @@ mcpRelay:
     maxAge: "168h"
     janitorInterval: "15m"
 
-  # The relay's /metrics endpoint is Prometheus text format behind the same
-  # bearer auth as the tools. Enabling this adds a dedicated `prometheus`
-  # identity whose bare token is also stored under the `scrape-token` key so a
-  # ServiceMonitor can reference it without parsing the token file.
+  # --- fence signing key ----------------------------------------------------
+  # Every tool response is wrapped in a signed <sec:fence> element. By default
+  # the relay generates the Ed25519 key at process start, so the fingerprint
+  # changes on every restart and differs between replicas — fine until
+  # something actually verifies those signatures, at which point it needs a key
+  # it can pin.
+  #
+  # Supply one and every replica signs identically and keeps doing so across
+  # rollouts. It is mounted as a file (never an env var) at
+  # /etc/mcp-fence/<key>, and passed as $FENCE_SIGNING_KEY_FILE.
+  #
+  #   openssl genpkey -algorithm ed25519 -out fence.pem
+  #   kubectl -n <ns> create secret generic relay-fence-key \
+  #     --from-file=fence-key=fence.pem
+  #
+  # Accepts PKCS#8 PEM, base64 PKCS#8 DER, a base64 32-byte seed or a base64
+  # 64-byte private key. A malformed key fails the relay's startup.
+  #
+  # It comes from a Secret you manage and from nowhere else: it is a signing
+  # key, so there is no inline field to put it in a values file, and no
+  # generate-if-empty path — a key the chart mints is a key no verifier has
+  # pinned, which is what the relay's ephemeral default already gives you.
+  #
+  # Supplying one reverses an upstream default deliberately: it extends the
+  # blast radius of a key leak from one process lifetime to "until you
+  # rotate". Leave it empty unless a verifier is pinning the fingerprint.
+  fenceKey:
+    existingSecret: ""
+    existingSecretKey: "fence-key"
+
+  # --- /health bearer token -------------------------------------------------
+  # Optional, and a SEPARATE secret from the agent tokens above: the probe and
+  # the MCP endpoint are different trust domains. Unset leaves /health open,
+  # which is the relay's default and is usually right for a ClusterIP service.
+  # Set it when /health is reachable beyond the cluster — e.g. the relay
+  # Ingress below.
+  #
+  # Setting this switches the readiness probe from an HTTP GET to the relay's
+  # own `--healthcheck` self-probe, which reads $MCP_HEALTH_TOKEN and sends the
+  # header itself. A Kubernetes httpGet probe can only carry a literal header,
+  # which would put the token in the Deployment manifest in plain text.
+  #
+  # Like the fence key, it comes from a Secret you manage and has no inline
+  # field: a bearer token in a values file is a credential in a values file.
+  #
+  #   kubectl -n <ns> create secret generic relay-health-token \
+  #     --from-literal=health-token="$(openssl rand -hex 32)"
+  #
+  # Ignored by relay images that predate the token (it simply leaves /health
+  # open); the probe change is harmless there either way.
+  healthToken:
+    existingSecret: ""
+    existingSecretKey: "health-token"
+
+  # The relay's /metrics endpoint is Prometheus text format behind a bearer
+  # token. Enabling this mints a scrape credential, stores it bare under the
+  # `scrape-token` key for the ServiceMonitor to reference, and passes it to
+  # the relay as $MCP_METRICS_TOKEN.
   metrics:
     enabled: false
     # The scrape credential is kept in its own Secret
@@ -731,12 +780,42 @@ mcpRelay:
     # tokens, so Prometheus's RBAC can be scoped to that object alone.
     existingSecret: ""
     existingSecretKey: "scrape-token"
+    # Also add the scrape credential to the MCP token file, as identity
+    # `prometheus`.
+    #
+    # Relay images up to v1.3.0 gate /metrics on the MCP token table, so the
+    # scraper's credential has to be in that table or every scrape 401s. Newer
+    # images gate it on $MCP_METRICS_TOKEN alone, which is the boundary that
+    # matters: /metrics names the destination hosts every caller has fetched,
+    # and a scraper should not hold a credential that also calls the tools.
+    #
+    # The chart sets both, so one value works either way. Turn this off once
+    # your relay image gates /metrics on its own token — the scraper then
+    # cannot reach the MCP endpoint at all.
+    mcpIdentity: true
 
-  # Any other upstream env var, verbatim. See the relay README's config table.
+  # The relay drains in-flight requests for up to 30s on SIGTERM, then exits
+  # non-zero if anything is still running. 30 here would leave no margin for
+  # SIGTERM delivery and the final flush, so the drain would be cut short on
+  # every rollout.
+  terminationGracePeriodSeconds: 45
+
+  # Any other upstream env var, verbatim. See the relay README's config table
+  # for the full list — everything there that the chart does not model itself
+  # can be set here.
   config: {}
   #   CACHE_TTL_SECONDS: "300"
+  #   CACHE_MAX_ENTRIES: "1000"
   #   MAX_BODY_BYTES: "500000"
-  #   EXTRACT_LINKS: "true"
+  #   MAX_PDF_BYTES: "50000000"
+  #   MAX_OFFICE_BYTES: "50000000"
+  #   MAX_IMAGE_BYTES: "7500000"
+  #   MAX_EXTRACTED_CHARS: "1000000"
+  #   MCP_HISTORY_ENTRIES: "50"
+  #   USER_AGENT: "acme-research-bot/1.0"
+  #   EXTRACT_LINKS: "false"
+  #   # Empty disables pruning; unset keeps the relay's default selector.
+  #   PRUNE_SELECTOR: ""
 
   extraEnv: []
 

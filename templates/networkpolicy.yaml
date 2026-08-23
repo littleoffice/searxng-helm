@@ -1,6 +1,6 @@
 {{- include "searxng.relay.validate" . -}}
 {{- if .Values.networkPolicy.enabled }}
-{{- $port := (.Values.searxng.settings.server).port | default 8080 -}}
+{{- $port := include "searxng.serverPort" . -}}
 {{- $np := .Values.networkPolicy }}
 {{- $r := .Values.mcpRelay }}
 {{- $from := include "searxng.netpolFrom" (dict "ctx" . "cfg" $np.ingress) }}
