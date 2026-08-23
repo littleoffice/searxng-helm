@@ -1,0 +1,119 @@
+# Two teams, one SearXNG, one release.
+#
+# Each team gets its own relay Deployment with its own bearer tokens, its own
+# engine scope and its own configuration. They share the search instance and
+# nothing else.
+#
+# The objects this file only *references* are yours to create first — the chart
+# takes no secret and no relay configuration from values:
+#
+#   # one settings.yml for the org, with a private engine per team:
+#   #   - name: team-a-confluence
+#   #     disabled: true
+#   #     tokens: ["ENGINE-TOKEN-A"]
+#   #   - name: team-b-jira
+#   #     disabled: true
+#   #     tokens: ["ENGINE-TOKEN-B"]
+#   kubectl -n search create secret generic searxng-settings \
+#     --from-file=settings.yml
+#
+#   # the token that unlocks only that team's engine
+#   kubectl -n search create secret generic relay-team-a-engines \
+#     --from-literal=searxng-tokens='ENGINE-TOKEN-A'
+#   kubectl -n search create secret generic relay-team-b-engines \
+#     --from-literal=searxng-tokens='ENGINE-TOKEN-B'
+#
+#   # each team's non-secret config (see relay-config.example.yaml)
+#   kubectl -n search create configmap relay-team-a-config \
+#     --from-literal=MCP_RATE_LIMIT_RPS=20 \
+#     --from-literal=MCP_STATELESS=true \
+#     --from-literal=FETCH_ALLOWED_HOSTS=confluence-a.corp:443
+#   kubectl -n search create configmap relay-team-b-config \
+#     --from-literal=MCP_RATE_LIMIT_RPS=2 \
+#     --from-literal=EXTRACT_LINKS=false
+#
+#   helm install searxng ./searxng -n search -f examples/values-multi-tenant.yaml
+
+image:
+  tag: "2026.7.22-ef8f6470e"
+
+searxng:
+  existingSettingsSecret: searxng-settings
+  existingSettingsSecretKey: settings.yml
+  # Mirrors server.port / server.limiter in that file.
+  port: 8080
+  limiter:
+    enabled: false
+
+mcpRelay:
+  enabled: true
+
+  # Fleet-wide limits. Either team's ConfigMap can override any of these, which
+  # is why they are applied first.
+  config:
+    MAX_PDF_BYTES: "50000000"
+    CACHE_TTL_SECONDS: "300"
+
+  # Applied to both instances unless the instance says otherwise.
+  defaults:
+    replicaCount: 1
+    resources:
+      requests:
+        cpu: 50m
+        memory: 128Mi
+      limits:
+        memory: 512Mi
+
+  instances:
+    # Team A: two callers, its own engine, its own ingress, and scraped.
+    # replicaCount 2 is why its ConfigMap sets MCP_STATELESS=true — sessions
+    # live in each pod's memory, and the chart cannot read that ConfigMap to
+    # check.
+    - name: team-a
+      existingConfigMap: relay-team-a-config
+      searxngTokens:
+        existingSecret: relay-team-a-engines
+      auth:
+        identities:
+          - name: claude-desktop
+          - name: ci-agent
+      metrics:
+        enabled: true
+      replicaCount: 2
+      ingress:
+        enabled: true
+        className: nginx
+        annotations:
+          cert-manager.io/cluster-issuer: letsencrypt-prod
+        hosts:
+          - host: mcp-a.example.com
+            paths:
+              - path: /
+                pathType: Prefix
+        tls:
+          - secretName: mcp-a-tls
+            hosts: [mcp-a.example.com]
+
+    # Team B: one caller, its own engine, cluster-internal only.
+    - name: team-b
+      existingConfigMap: relay-team-b-config
+      searxngTokens:
+        existingSecret: relay-team-b-engines
+      auth:
+        identities:
+          - name: default
+
+valkey:
+  enabled: true
+  architecture: standalone
+
+networkPolicy:
+  enabled: true
+  ingress:
+    allowSameNamespace: true
+    fromNamespaces:
+      - ingress-nginx
+
+metrics:
+  serviceMonitor:
+    enabled: false

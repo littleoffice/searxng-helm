@@ -26,6 +26,12 @@ command -v openssl >/dev/null || { echo "openssl not found" >&2; exit 1; }
 rand_alnum() { openssl rand -base64 96 | LC_ALL=C tr -dc 'A-Za-z0-9' | cut -c1-"$1"; }
 
 SECRET_KEY="$(openssl rand -hex 32)"
+# The /metrics basic-auth password. It has to appear in two objects: here, for
+# the ServiceMonitor to present, and inside settings.yml as
+# general.open_metrics, which is what SearXNG checks it against. Generating it
+# once and writing both is the only way to keep them in step — the chart reads
+# neither.
+OPEN_METRICS_PASSWORD="$(openssl rand -hex 32)"
 VALKEY_PASSWORD="$(rand_alnum 32)"
 TOKEN_CLAUDE="$(openssl rand -hex 32)"
 TOKEN_AGENT="$(openssl rand -hex 32)"
@@ -99,7 +105,58 @@ cat <<YAML
 YAML
 fi
 
+# settings.yml is not a generated credential — it is your configuration, and
+# the chart has no copy of it to fall back on. What is emitted below is the
+# smallest file SearXNG will start on: upstream's defaults and nothing else.
+# Edit it before you rely on it; engine api_keys and tokens belong in here
+# rather than in a values file.
 cat <<YAML
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: ${RELEASE}-searxng-settings
+  namespace: ${NAMESPACE}
+  labels:
+    app.kubernetes.io/part-of: searxng
+type: Opaque
+stringData:
+  settings.yml: |
+    # Starting point, not a recommendation. Anything from
+    # https://docs.searxng.org/admin/settings/ is valid here.
+    use_default_settings: true
+
+    general:
+      instance_name: "SearXNG"
+      # Uncomment together with searxng.metrics.enabled=true. The password is
+      # the one in the metrics Secret below, and the two must stay equal.
+      # enable_metrics: true
+      # open_metrics: "${OPEN_METRICS_PASSWORD}"
+
+    server:
+      # Keep in step with searxng.port and searxng.limiter.enabled in values:
+      # the chart cannot read this file and drives the container port, the
+      # probes, the NetworkPolicy and limiter.toml from those.
+      port: 8080
+      bind_address: "::"
+      limiter: false
+---
+# The /metrics basic-auth pair -> searxng.metrics.existingSecret.
+#
+# Only used when searxng.metrics.enabled is true. The password is the same
+# value written into general.open_metrics above; SearXNG checks one against the
+# other, so rotating means editing both.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: ${RELEASE}-searxng-metrics
+  namespace: ${NAMESPACE}
+  labels:
+    app.kubernetes.io/part-of: searxng
+type: Opaque
+stringData:
+  username: "prometheus"
+  password: "${OPEN_METRICS_PASSWORD}"
 ---
 apiVersion: v1
 kind: Secret
@@ -136,6 +193,11 @@ Wire these up with:
 
   searxng:
     existingSecret: ${RELEASE}-searxng-secret
+    existingSettingsSecret: ${RELEASE}-searxng-settings
+    metrics:
+      # ...with general.enable_metrics/open_metrics uncommented in the
+      # settings Secret, or the scrape 401s.
+      existingSecret: ${RELEASE}-searxng-metrics
   valkey:
     architecture: ${ARCH}
     auth:

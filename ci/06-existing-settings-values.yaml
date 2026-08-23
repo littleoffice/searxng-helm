@@ -1,11 +1,13 @@
 # ci-release: extsettings
-# ci-pre-install: kubectl -n "$NAMESPACE" create secret generic searxng-settings --from-file=ci/06-settings.yml
+# ci-pre-install: kubectl -n "$NAMESPACE" create secret generic ci-settings --from-file=ci/06-settings.yml
 #
-# Scenario: settings.yml comes from a Secret the user manages. The body lives in
-# ci/06-settings.yml, which `kubectl --from-file` keys by its basename — so the
-# key is `06-settings.yml`, deliberately not `settings.yml`. The chart projects
-# whatever key is named to the fixed mount path, so a wrong `items.key` shows up
-# as a CrashLoop here rather than passing quietly.
+# Scenario: a settings Secret whose key is NOT called settings.yml. Every
+# scenario now mounts the file from a Secret — that is the only mode the chart
+# has — so what this one is for is the key name. The body lives in
+# ci/06-settings.yml, which `kubectl --from-file` keys by its basename, giving
+# the key `06-settings.yml`. The chart projects whatever key is named to the
+# fixed mount path, so a wrong `items.key` shows up as a CrashLoop here rather
+# than passing quietly.
 #
 # The body is a separate file rather than a heredoc in the directive above
 # because that directive is read as a single line and yamllint caps lines at
@@ -13,8 +15,9 @@
 # jobs iterate.
 #
 # What this is meant to catch:
-#   * the chart still rendering (and mounting) its own settings.yml
-#   * the Deployment carrying a checksum/config for content it cannot see
+#   * items.key being hard-coded to settings.yml rather than following
+#     existingSettingsSecretKey
+#   * the chart rendering a settings Secret of its own alongside the user's
 #   * server.port drifting between values and the mounted file, which would
 #     leave the probes pointed at a closed port
 
@@ -37,15 +40,14 @@ networkPolicy:
   enabled: false
 
 searxng:
-  existingSettingsSecret: searxng-settings
+  existingSettingsSecret: ci-settings
   existingSettingsSecretKey: 06-settings.yml
 
-  # Ignored for the file's contents, but server.* is still what drives the
-  # container port and the limiter, so it has to agree with the Secret above.
-  settings:
-    server:
-      port: 8080
-      limiter: false
+  # Mirrors the Secret above: the chart cannot read that file, and these drive
+  # the container port, the probes, the NetworkPolicy and limiter.toml.
+  port: 8080
+  limiter:
+    enabled: false
 
 tests:
   enabled: true

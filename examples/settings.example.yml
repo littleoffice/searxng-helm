@@ -1,0 +1,106 @@
+# Example settings.yml — the file the chart mounts but never writes.
+#
+# Put it in a Secret and name that Secret in values:
+#
+#   kubectl -n search create secret generic searxng-settings \
+#     --from-file=settings.yml=examples/settings.example.yml
+#
+#   searxng:
+#     existingSettingsSecret: searxng-settings
+#
+# Everything from https://docs.searxng.org/admin/settings/ is valid here. This
+# is where engine `tokens`, per-engine `api_key` / `password` fields and inline
+# credentials in `outgoing.proxies` belong: none of them have an env-var
+# override upstream, and keeping the file out of values keeps them out of Helm.
+#
+# Two things the chart cannot read out of this file and therefore needs
+# repeated in values:
+#   server.port     -> searxng.port                (container port, probes,
+#                                                   NetworkPolicy)
+#   server.limiter  -> searxng.limiter.enabled     (limiter.toml, Valkey)
+#   public_instance -> searxng.limiter.publicInstance
+#
+# Do NOT set server.secret_key here: it arrives as $SEARXNG_SECRET from its own
+# Secret. Do NOT set valkey.url: it arrives as $SEARXNG_VALKEY_URL.
+use_default_settings: true
+
+general:
+  instance_name: "Example Search"
+  contact_url: false
+  donation_url: false
+  privacypolicy_url: false
+  # With searxng.metrics.enabled, these two are required, and open_metrics must
+  # equal the password in the Secret named by searxng.metrics.existingSecret —
+  # that is what the ServiceMonitor presents.
+  # enable_metrics: true
+  # open_metrics: "the-same-value-as-that-Secret-password"
+
+server:
+  port: 8080
+  bind_address: "::"
+  # Needs Valkey, and searxng.limiter.enabled must say so too.
+  limiter: true
+  public_instance: false
+  image_proxy: true
+  method: "POST"
+  default_http_headers:
+    X-Content-Type-Options: nosniff
+    X-Robots-Tag: noindex, nofollow
+    Referrer-Policy: no-referrer
+
+ui:
+  static_use_hash: true
+  infinite_scroll: false
+
+search:
+  safe_search: 1
+  autocomplete: "duckduckgo"
+  default_lang: "en"
+  formats:
+    - html
+    # Required if you enable mcpRelay — the relay reads results as JSON, and
+    # the chart can no longer add this for you.
+    # - json
+
+outgoing:
+  request_timeout: 4.0
+  max_request_timeout: 12.0
+  enable_http2: true
+
+# --- custom / additional search providers ------------------------------------
+# Merged into the built-in list by `name` because use_default_settings is true.
+# Use it to flip a shipped engine on or off, or to add your own.
+engines:
+  # re-enable a built-in that ships disabled
+  - name: wikidata
+    disabled: false
+  # tune a built-in
+  - name: duckduckgo
+    timeout: 4.0
+  # turn one off entirely
+  - name: brave
+    disabled: true
+  # a private instance of a supported engine
+  - name: my gitea
+    engine: gitea
+    base_url: https://git.example.com
+    shortcut: gt
+    categories: [it, repos]
+    timeout: 5.0
+  # a plain JSON API via the generic engine, gated by a token that can only
+  # live in this file
+  - name: internal docs
+    engine: json_engine
+    search_url: https://docs.internal.example.com/api/search?q={query}
+    results_query: results
+    url_query: url
+    title_query: title
+    content_query: excerpt
+    shortcut: doc
+    categories: [general]
+    timeout: 4.0
+    # Gates the engine. Give the same value to the relay through
+    # mcpRelay.searxngTokens.existingSecret, which is a Secret too — this file
+    # is one, and the chart has no values field that would take it.
+    tokens:
+      - REPLACE_ME_internal_docs_token

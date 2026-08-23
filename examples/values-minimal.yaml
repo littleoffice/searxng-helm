@@ -1,8 +1,23 @@
-# Smallest thing that works. Chart generates and maintains every credential.
-# Not GitOps-safe — see values-production.yaml for that.
+# Smallest thing that works. The chart generates and maintains every credential
+# it can. Not GitOps-safe — see values-production.yaml for that.
+#
+# settings.yml is the one thing it cannot generate: it is your configuration,
+# it holds engine tokens and api_keys, and the chart has no default for it. So
+# it comes from a Secret, and the render is refused without one.
+#
+#   kubectl -n search create secret generic searxng-settings \
+#     --from-file=settings.yml=examples/settings.example.yml
 #
 #   helm install searxng ./searxng -n search --create-namespace \
 #     -f examples/values-minimal.yaml
+
+searxng:
+  existingSettingsSecret: searxng-settings
+  existingSettingsSecretKey: settings.yml
+  # Mirrors server.port / server.limiter in that file.
+  port: 8080
+  limiter:
+    enabled: true
 
 image:
   tag: "2026.7.22-ef8f6470e"    # pin something real; check the upstream tags

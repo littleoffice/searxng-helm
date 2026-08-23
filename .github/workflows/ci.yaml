@@ -170,7 +170,8 @@ jobs:
       - name: Assert the schema actually rejects unknown keys
         run: |
           set -euo pipefail
-          if helm template t . --set thisKeyDoesNotExist=true >/dev/null 2>&1; then
+          if helm template t . --set searxng.existingSettingsSecret=s \
+               --set thisKeyDoesNotExist=true >/dev/null 2>&1; then
             echo "values.schema.json accepted an unknown top-level key" >&2
             exit 1
           fi
@@ -434,13 +435,143 @@ jobs:
       - name: Credential consistency
         run: ./hack/test-credential-consistency.sh .
 
+      # settings.yml comes from a Secret and from nowhere else. The chart does
+      # not render it, does not ship a default for it, and refuses to render at
+      # all without one: an empty settings.yml is not an empty configuration --
+      # SearXNG reads the file as a complete one unless it says
+      # use_default_settings -- so a default invented here would surface as a
+      # CrashLoop rather than a render error.
+      #
+      # searxng.settings is kept in the schema purely so the 1.x scope fails
+      # with a migration message instead of a bare "additional properties".
+      - name: settings.yml comes from a Secret, or not at all
+        run: |
+          set -euo pipefail
+
+          if helm template t . >/tmp/no-secret.err 2>&1; then
+            echo "rendered with no settings Secret named" >&2
+            exit 1
+          fi
+          grep -q 'searxng.existingSettingsSecret is empty' /tmp/no-secret.err
+          echo "refused with no Secret named"
+
+          if helm template t . \
+               --set searxng.existingSettingsSecret=my-settings \
+               --set searxng.settings.server.port=8080 \
+               >/tmp/old-scope.err 2>&1; then
+            echo "the removed searxng.settings scope was accepted" >&2
+            exit 1
+          fi
+          grep -q 'searxng.settings was removed' /tmp/old-scope.err
+          echo "the 1.x settings scope fails with a migration message"
+
+          helm template t . \
+            --set searxng.existingSettingsSecret=my-settings \
+            --set searxng.existingSettingsSecretKey=custom-key.yml \
+            > /tmp/external.yaml
+
+          python3 - <<'PY'
+          import yaml
+
+          docs = [d for d in yaml.safe_load_all(open('/tmp/external.yaml')) if d]
+
+          # Nothing the chart renders may carry settings.yml, and the mount has
+          # to follow existingSettingsSecretKey rather than assuming a name.
+          for d in docs:
+              if d.get('kind') == 'Secret':
+                  body = d.get('stringData') or {}
+                  assert 'settings.yml' not in body, d['metadata']['name']
+
+          dep = next(d for d in docs if d.get('kind') == 'Deployment')
+          spec = dep['spec']['template']['spec']
+          vol = next(v for v in spec['volumes'] if v['name'] == 'settings')
+          assert vol['secret']['secretName'] == 'my-settings', vol
+          assert vol['secret']['items'] == [
+              {'key': 'custom-key.yml', 'path': 'settings.yml'}], vol
+
+          mount = next(m for m in spec['containers'][0]['volumeMounts']
+                       if m['name'] == 'settings')
+          assert mount['mountPath'] == '/etc/searxng/settings.yml', mount
+
+          # server.port is mirrored in values because the file cannot be read.
+          ports = [p['containerPort'] for p in spec['containers'][0]['ports']]
+          assert 8080 in ports, ports
+          print('mounted from the named Secret, under the named key')
+          PY
+
+      # Two relays from one release. The failure this catches is not a render
+      # error: overlapping selectors mean one Deployment's ReplicaSet adopts
+      # the other's pods, and a shared memo key means both instances get the
+      # same bearer tokens — a tenant boundary that silently is not one.
+      - name: Relay instances are separate deployments
+        run: |
+          set -euo pipefail
+          helm template t . \
+            --set searxng.existingSettingsSecret=my-settings \
+            --set mcpRelay.enabled=true \
+            --set-string mcpRelay.config.MAX_PDF_BYTES=1 \
+            --set mcpRelay.instances[0].name=default \
+            --set mcpRelay.instances[0].existingConfigMap=cfg-default \
+            --set mcpRelay.instances[1].name=agents \
+            --set mcpRelay.instances[1].existingConfigMap=cfg-agents \
+            --set mcpRelay.instances[1].searxngTokens.existingSecret=agents-engines \
+            > /tmp/instances.yaml
+          python3 - <<'PY'
+          import yaml
+
+          docs = [d for d in yaml.safe_load_all(open('/tmp/instances.yaml')) if d]
+          def by(kind):
+              return {d['metadata']['name']: d for d in docs if d.get('kind') == kind}
+
+          deps, svcs, secs = by('Deployment'), by('Service'), by('Secret')
+          a, b = 't-searxng-mcp-relay', 't-searxng-mcp-relay-agents'
+
+          # The `default` instance keeps the unsuffixed names a single-relay
+          # release has always had; its Deployment selector is immutable, so a
+          # rename here would break every existing upgrade.
+          for name in (a, b):
+              assert name in deps and name in svcs and name in secs, name
+
+          def sel(d):
+              return d['spec']['selector']['matchLabels']
+          def pod_labels(d):
+              return d['spec']['template']['metadata']['labels']
+          def matches(selector, labels):
+              return all(labels.get(k) == v for k, v in selector.items())
+
+          assert not matches(sel(deps[a]), pod_labels(deps[b])), 'default selector adopts agents pods'
+          assert not matches(sel(deps[b]), pod_labels(deps[a])), 'agents selector adopts default pods'
+          assert not matches(svcs[a]['spec']['selector'], pod_labels(deps[b])), 'default Service selects agents pods'
+
+          # envFrom order is the whole precedence contract: shared config
+          # first, the instance's own second so it wins.
+          for name, own in ((a, 'cfg-default'), (b, 'cfg-agents')):
+              c = deps[name]['spec']['template']['spec']['containers'][0]
+              got = [list(e.values())[0]['name'] for e in c['envFrom']]
+              assert got == ['t-searxng-mcp-relay-config', own], (name, got)
+
+          # Tokens are per instance, or the boundary is decorative.
+          def tokens(name):
+              return {l.split(':', 1)[1] for l in secs[name]['stringData']['tokens'].splitlines()
+                      if l and not l.startswith('#')}
+          assert not (tokens(a) & tokens(b)), 'both instances were given the same tokens'
+
+          # Only the instance that asked for them gets engine tokens.
+          env = lambda n: {e['name'] for e in deps[n]['spec']['template']['spec']['containers'][0]['env']}
+          assert 'SEARXNG_TOKENS' in env(b) and 'SEARXNG_TOKENS' not in env(a)
+          print('two instances: distinct objects, disjoint selectors, no shared tokens')
+          PY
+
       - name: No credentials in argv
         run: |
           set -euo pipefail
           helm template t . \
+            --set searxng.existingSettingsSecret=my-settings \
+            --set searxng.metrics.enabled=true \
+            --set searxng.metrics.existingSecret=my-metrics \
             --set mcpRelay.enabled=true \
-            --set mcpRelay.metrics.enabled=true \
-            --set searxng.metrics.enabled=true > /tmp/all.yaml
+            --set mcpRelay.instances[0].name=default \
+            --set mcpRelay.instances[0].metrics.enabled=true > /tmp/all.yaml
           python3 - <<'PY'
           import sys, yaml
 
@@ -470,6 +601,14 @@ jobs:
                   for e in c.get('env') or []:
                       if isinstance(e.get('value'), str):
                           surface.append(e['value'])
+                  # Probes are argv and headers the API server stores in the
+                  # clear too — the relay's /health probe is an exec probe
+                  # precisely so a token never lands here.
+                  for probe in ('livenessProbe', 'readinessProbe', 'startupProbe'):
+                      pr = c.get(probe) or {}
+                      surface += (pr.get('exec') or {}).get('command') or []
+                      for h in (pr.get('httpGet') or {}).get('httpHeaders') or []:
+                          surface.append(h.get('value', ''))
                   for s in surface:
                       for n in needles:
                           if n in s:
@@ -763,6 +902,14 @@ jobs:
       # the jump, and do the credentials it already holds come through intact?
       # `lookup` only works against a live cluster, so nothing before this
       # point can tell us.
+      #
+      # 2.0.0 makes that a two-file job. settings.yml moved out of values and
+      # into a Secret, so the published chart is installed with the 1.x-shaped
+      # .github/ci/upgrade-1x-values.yaml and upgraded with the current
+      # ci/01-defaults-values.yaml -- which is exactly the migration a user
+      # performs, Secret first. The chart-owned <fullname>-settings object goes
+      # away in that jump by design, so the comparison is over the credentials
+      # that must survive it rather than over every Secret in the namespace.
       - name: Install the published version, then upgrade to this one
         if: steps.published.outputs.found == 'true'
         env:
@@ -776,25 +923,39 @@ jobs:
           helm install searxng "${CHART_REF}" \
             --version "${CHART_VERSION}" \
             --namespace "${ns}" \
-            --values ci/01-defaults-values.yaml \
+            --values .github/ci/upgrade-1x-values.yaml \
             --wait --timeout 10m
 
-          before="$(kubectl -n "${ns}" get secrets \
-            -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.data}{"\n"}{end}' \
-            | grep -v 'sh.helm.release' | sort)"
+          # The credentials that have to come through the jump untouched: the
+          # secret_key that signs user cookies, and the Valkey password.
+          creds() {
+            kubectl -n "${ns}" get secret searxng \
+              -o jsonpath='{.data.secret-key}'
+            printf '\t'
+            kubectl -n "${ns}" get secret searxng-valkey \
+              -o jsonpath='{.data.valkey-password}'
+          }
+          before="$(creds)"
+
+          # The migration itself: settings.yml becomes a Secret the user owns.
+          kubectl -n "${ns}" create secret generic ci-settings \
+            --from-file=ci/settings.yml
 
           helm upgrade searxng . \
             --namespace "${ns}" \
             --values ci/01-defaults-values.yaml \
             --wait --timeout 10m
 
-          after="$(kubectl -n "${ns}" get secrets \
-            -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.data}{"\n"}{end}' \
-            | grep -v 'sh.helm.release' | sort)"
+          after="$(creds)"
 
           if [ "${before}" != "${after}" ]; then
             echo "credentials changed upgrading ${CHART_VERSION} -> working tree" >&2
-            diff <(printf '%s\n' "${before}") <(printf '%s\n' "${after}") || true
+            exit 1
+          fi
+
+          # The chart's own settings Secret is gone, and nothing replaced it.
+          if kubectl -n "${ns}" get secret searxng-settings >/dev/null 2>&1; then
+            echo "the chart still owns a settings Secret after the upgrade" >&2
             exit 1
           fi
 

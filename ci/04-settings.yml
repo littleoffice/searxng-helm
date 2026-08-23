@@ -1,0 +1,51 @@
+# Not a values file — the settings.yml body for ci/04-full-values.yaml, which
+# turns on everything at once and so needs a file that agrees with all of it:
+#
+#   * server.limiter: true            matches searxng.limiter.enabled
+#   * general.open_metrics            substituted by make-secrets.sh, which
+#                                     writes the same generated value into the
+#                                     basic-auth Secret the ServiceMonitor
+#                                     presents
+#   * search.formats includes json    the MCP relay cannot read results
+#                                     without it, and the chart can no longer
+#                                     add it here
+#   * a private engine with a tokens: list, so mcpRelay.searxngTokens has
+#     something real to gate — same substitution, same reason
+#
+# The @PLACEHOLDER@ values are filled in by .github/ci/make-secrets.sh at
+# install time. Nothing secret is committed here.
+use_default_settings: true
+
+general:
+  instance_name: "CI"
+  debug: false
+  enable_metrics: true
+  open_metrics: "@OPEN_METRICS_PASSWORD@"
+
+server:
+  port: 8080
+  bind_address: "::"
+  limiter: true
+  public_instance: false
+  image_proxy: true
+
+search:
+  safe_search: 1
+  formats: [html, json]
+
+# Private engine, invisible to any caller that does not present the token. The
+# relay is given the same value through mcpRelay.searxngTokens.
+engines:
+  # One private engine per relay instance. Each is invisible to any caller that
+  # does not present its token, so the `default` and `agents` relays reach
+  # different engines on this one SearXNG.
+  - name: ci-private
+    engine: duckduckgo
+    shortcut: cip
+    disabled: true
+    tokens: ["@ENGINE_TOKEN@"]
+  - name: ci-private-agents
+    engine: duckduckgo
+    shortcut: cipa
+    disabled: true
+    tokens: ["@AGENTS_ENGINE_TOKEN@"]

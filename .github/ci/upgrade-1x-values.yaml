@@ -1,0 +1,48 @@
+# Values for the *published* 1.x chart in the upgrade job, and only there.
+#
+# 2.0.0 removed searxng.settings and added searxng.port / searxng.limiter.*,
+# so no single values file installs on both sides of that jump: the 1.x schema
+# rejects the new keys and the 2.x schema rejects the old scope. This file is
+# the 1.x half — it mirrors ci/01-defaults-values.yaml, with the settings tree
+# that 1.x rendered into its own Secret. The upgrade then runs with
+# ci/01-defaults-values.yaml, which is what a real upgrade looks like: the
+# settings move out of values and into a Secret you create first.
+#
+# It lives under .github/ so the render, lint and install jobs -- which iterate
+# ci/*-values.yaml -- never feed it to the chart in this tree.
+
+image:
+  tag: "latest"
+
+replicaCount: 1
+
+podDisruptionBudget:
+  enabled: false
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 256Mi
+  limits:
+    memory: 768Mi
+
+valkey:
+  enabled: true
+  architecture: standalone
+
+networkPolicy:
+  enabled: true
+  ingress:
+    allowSameNamespace: true
+
+tests:
+  enabled: true
+
+searxng:
+  settings:
+    use_default_settings: true
+    general:
+      instance_name: "SearXNG"
+    server:
+      port: 8080
+      limiter: false

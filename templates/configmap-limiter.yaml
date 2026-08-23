@@ -1,7 +1,11 @@
 {{- if include "searxng.limiterEnabled" . }}
 {{- $l := .Values.searxng.limiter }}
-{{- $server := .Values.searxng.settings.server | default dict }}
-{{- $linkToken := $server.public_instance | default false }}
+{{/*
+link_token is what server.public_instance turns on inside SearXNG. The chart
+cannot read settings.yml, so it goes by the mirrored value; if the two
+disagree, this file and the running instance disagree about link tokens.
+*/}}
+{{- $linkToken := $l.publicInstance | default false }}
 apiVersion: v1
 kind: ConfigMap
 metadata:

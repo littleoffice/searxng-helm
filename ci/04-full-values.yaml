@@ -1,14 +1,28 @@
 # ci-needs: prometheus-crds
+# ci-pre-install: .github/ci/make-secrets.sh "$NAMESPACE"
 #
 # Scenario: every optional subsystem on at once — Ingress, HPA, the MCP relay,
-# SearXNG /metrics basic-auth, both ServiceMonitors, custom settings.yml,
-# limiter.toml and an extra config file.
+# SearXNG /metrics basic-auth, both ServiceMonitors, a settings.yml with the
+# lot, limiter.toml and an extra config file.
 #
-# This is the scenario that catches interaction bugs: enabling the relay
-# rewrites `search.formats`, enabling relay metrics mints a `prometheus`
-# identity in the token file, and enabling either ServiceMonitor requires the
-# Prometheus Operator CRDs — hence the `ci-needs` directive above, which the
-# install workflow reads before creating the cluster.
+# This is the scenario that catches interaction bugs: enabling relay metrics
+# mints a `prometheus` identity in the token file, and enabling either
+# ServiceMonitor requires the Prometheus Operator CRDs — hence the `ci-needs`
+# directive above, which the install workflow reads before creating the
+# cluster.
+#
+# It is also where the credential plumbing earns its keep. Every secret this
+# scenario needs is created by .github/ci/make-secrets.sh, because the chart
+# has no values field that takes secret material: settings.yml, the
+# open-metrics basic-auth pair, the relay's engine tokens, its fence signing
+# key and its /health token. The script generates the open-metrics password
+# once and writes it both into general.open_metrics inside the settings Secret
+# and into the basic-auth Secret, which is the coupling an operator has to
+# reproduce by hand — if it breaks, every scrape 401s.
+#
+# The chart cannot read that settings.yml either, so what it mirrors in values
+# has to agree with it: server.limiter (limiter.toml, Valkey) and search.formats
+# holding `json` (the relay).
 
 replicaCount: 1
 
@@ -31,19 +45,24 @@ resources:
 
 searxng:
   baseUrl: "https://search.ci.invalid/"
+  existingSettingsSecret: ci-settings
+  # make-secrets.sh substitutes the placeholders in ci/04-settings.yml into a
+  # temp file and names this key explicitly, so the key is `settings.yml` — not
+  # the fixture's basename the way scenarios 01-03 and 06 get it.
+  existingSettingsSecretKey: settings.yml
+  # Mirrors server.port in ci/04-settings.yml.
+  port: 8080
   metrics:
     enabled: true
-    username: prometheus
-  settings:
-    general:
-      instance_name: "CI"
-    server:
-      limiter: true
-      public_instance: false
-      image_proxy: true
-    search:
-      safe_search: 1
+    # Created by make-secrets.sh, whose password half is the same value it
+    # wrote into general.open_metrics in the settings Secret.
+    existingSecret: ci-metrics
+    existingSecretUsernameKey: username
+    existingSecretPasswordKey: password
   limiter:
+    # Mirrors server.limiter in ci/04-settings.yml.
+    enabled: true
+    publicInstance: false
     trustedProxies:
       - "10.0.0.0/8"
     filterLinkLocal: true
@@ -87,27 +106,65 @@ networkPolicy:
 
 mcpRelay:
   enabled: true
-  replicaCount: 1
-  stateless: false
-  auth:
-    identities:
-      - name: default
-        token: ""
-  searxngTokens:
-    tokens:
-      - ci-engine-token-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
-  rateLimit:
-    rps: 5
-  metrics:
-    enabled: true
-  podDisruptionBudget:
-    enabled: false
-  resources:
-    requests:
-      cpu: 25m
-      memory: 64Mi
-    limits:
-      memory: 128Mi
+
+  # Shared by both instances, and overridden by each one's ConfigMap where they
+  # disagree — which is the ordering this scenario is here to prove.
+  config:
+    MAX_PDF_BYTES: "20000000"
+    CACHE_TTL_SECONDS: "60"
+
+  defaults:
+    replicaCount: 1
+    resources:
+      requests:
+        cpu: 25m
+        memory: 64Mi
+      limits:
+        memory: 128Mi
+    podDisruptionBudget:
+      enabled: false
+
+  # Two relays against the one SearXNG: `default` keeps the unsuffixed object
+  # names a single-relay release has always had, `agents` proves the suffixed
+  # path — distinct Deployment, Service, ServiceAccount, NetworkPolicy, token
+  # Secret and selector.
+  instances:
+    - name: default
+      existingConfigMap: ci-relay-default-config
+      auth:
+        identities:
+          - name: default
+      searxngTokens:
+        existingSecret: ci-relay-engine-tokens
+        existingSecretKey: searxng-tokens
+      # Both from Secrets make-secrets.sh creates; the chart has no inline
+      # field for either, and the fence key is generated at install time
+      # rather than committed.
+      fenceKey:
+        existingSecret: ci-relay-fence
+        existingSecretKey: fence-key
+      # Gating /health switches the readiness probe to the relay's own
+      # --healthcheck self-probe, so this scenario fails if that probe is
+      # wrong: the pod never goes Ready and `helm install --wait` times out.
+      healthToken:
+        existingSecret: ci-relay-health
+        existingSecretKey: health-token
+      metrics:
+        enabled: true
+
+    - name: agents
+      existingConfigMap: ci-relay-agents-config
+      auth:
+        identities:
+          - name: agent-one
+          - name: agent-two
+      # A different engine token, so this instance reaches a different private
+      # engine than `default` — the multi-tenant boundary, enforced by SearXNG.
+      searxngTokens:
+        existingSecret: ci-relay-agents-engine-tokens
+        existingSecretKey: searxng-tokens
+      metrics:
+        enabled: false
 
 metrics:
   serviceMonitor:

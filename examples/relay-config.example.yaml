@@ -1,0 +1,68 @@
+# =============================================================================
+# Example relay ConfigMap -> mcpRelay.instances[].existingConfigMap
+# =============================================================================
+# Everything non-secret about one relay instance. Its keys become environment
+# variables on that instance's pods, layered over mcpRelay.config (which the
+# chart renders for the whole fleet) and under the handful of variables the
+# chart sets itself.
+#
+# The chart never reads this, which has two consequences: nothing here is
+# validated at render time — a bad value fails the relay's own startup — and
+# editing it does not roll the pods:
+#
+#   kubectl -n <ns> rollout restart deployment/<release>-searxng-mcp-relay
+#
+# The full list of what can go in here is the relay's own config table:
+# https://github.com/littleoffice/mcp-searxng-relay#configuration
+#
+# These are set by the chart and ignored if you name them here: MCP_PORT,
+# SEARXNG_URL, MCP_AUTH_TOKEN_FILE, FENCE_SIGNING_KEY_FILE, SEARXNG_TOKENS,
+# MCP_HEALTH_TOKEN, MCP_METRICS_TOKEN. Credentials belong in the Secrets in
+# secrets.example.yaml, not here — a ConfigMap is world-readable to anything
+# with get access to the namespace.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: relay-config
+  labels:
+    app.kubernetes.io/part-of: searxng
+data:
+  # --- logging -------------------------------------------------------------
+  LOG_LEVEL: "info"          # debug, info, warn, error, off
+  LOG_FORMAT: "json"         # json keeps the per-identity audit lines parseable
+
+  # --- sessions ------------------------------------------------------------
+  # Required if this instance runs more than one replica: sessions live in each
+  # pod's memory, so a server-issued session ID is only valid on the pod that
+  # issued it.
+  MCP_STATELESS: "false"
+  MCP_SESSION_MAX_AGE: "168h"
+  MCP_SESSION_JANITOR_INTERVAL: "15m"
+
+  # --- rate limiting -------------------------------------------------------
+  # Per caller, keyed by identity when authenticated. 0 disables.
+  MCP_RATE_LIMIT_RPS: "5"
+  # MCP_RATE_LIMIT_BURST: "10"
+  # MCP_RATE_LIMIT_EXEMPT: "uptime-monitor"
+
+  # --- outbound fetch policy -----------------------------------------------
+  # searxng_read_url refuses non-public IPs by default. Both entries need an
+  # explicit port, and the NetworkPolicy has to allow the same destinations —
+  # the relay's internet egress rule excludes private ranges.
+  # FETCH_ALLOWED_HOSTS: "wiki.internal:443,confluence.corp:443"
+  # FETCH_ALLOWED_CIDRS: "10.0.0.0/8:443"
+  #
+  # Egress proxy for the fetch tool. Deliberately not HTTP_PROXY/HTTPS_PROXY.
+  # FETCH_PROXY_ALL hands the per-IP SSRF policy to the proxy.
+  # FETCH_PROXY: "http://proxy.corp:3128"
+  # FETCH_PROXY_ALL: "false"
+
+  # --- extraction and caching ----------------------------------------------
+  # EXTRACT_LINKS: "true"     # false emits anchor text without targets
+  # PRUNE_SELECTOR: ""        # empty disables pruning; unset keeps the default
+  CACHE_TTL_SECONDS: "300"
+  CACHE_MAX_ENTRIES: "1000"
+  MAX_BODY_BYTES: "500000"
+  MAX_PDF_BYTES: "50000000"
+  MAX_EXTRACTED_CHARS: "1000000"
+  MCP_HISTORY_ENTRIES: "50"

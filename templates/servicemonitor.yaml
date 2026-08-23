@@ -32,13 +32,16 @@ spec:
       honorLabels: {{ $sm.honorLabels }}
       # SearXNG gates /metrics behind HTTP Basic auth; it only checks the
       # password, but a username has to be sent.
+      # Both halves come from the Secret named by searxng.metrics.existingSecret.
+      # The chart renders no credential of its own here: the password has to
+      # equal general.open_metrics in a settings.yml it cannot read.
       basicAuth:
         username:
-          name: {{ include "searxng.settingsSecretName" . }}
-          key: open-metrics-username
+          name: {{ include "searxng.metricsSecretName" . }}
+          key: {{ include "searxng.metricsSecretUsernameKey" . }}
         password:
-          name: {{ include "searxng.settingsSecretName" . }}
-          key: open-metrics-password
+          name: {{ include "searxng.metricsSecretName" . }}
+          key: {{ include "searxng.metricsSecretPasswordKey" . }}
       {{- with $sm.relabelings }}
       relabelings:
         {{- toYaml . | nindent 8 }}
@@ -48,7 +51,10 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
 {{- end }}
-{{- if and .Values.mcpRelay.enabled .Values.mcpRelay.metrics.enabled }}
+{{- if .Values.mcpRelay.enabled }}
+{{- range $r := (include "searxng.relay.instanceList" $ | fromYamlArray) }}
+{{- $inst := dict "ctx" $ "relay" $r }}
+{{- if $r.metrics.enabled }}
 {{- if $created }}
 ---
 {{- end }}
@@ -56,22 +62,22 @@ spec:
 apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:
-  name: {{ include "searxng.relay.fullname" . }}
+  name: {{ include "searxng.relay.fullname" $inst }}
   namespace: {{ $ns }}
   labels:
-    {{- include "searxng.relay.labels" . | nindent 4 }}
+    {{- include "searxng.relay.labels" $inst | nindent 4 }}
     {{- with $sm.labels }}
     {{- toYaml . | nindent 4 }}
     {{- end }}
 spec:
-  {{- if ne $ns .Release.Namespace }}
+  {{- if ne $ns $.Release.Namespace }}
   namespaceSelector:
     matchNames:
-      - {{ .Release.Namespace }}
+      - {{ $.Release.Namespace }}
   {{- end }}
   selector:
     matchLabels:
-      {{- include "searxng.relay.selectorLabels" . | nindent 6 }}
+      {{- include "searxng.relay.selectorLabels" $inst | nindent 6 }}
   endpoints:
     - port: http
       path: /metrics
@@ -84,8 +90,8 @@ spec:
       authorization:
         type: Bearer
         credentials:
-          name: {{ include "searxng.relay.scrapeSecretName" . }}
-          key: {{ include "searxng.relay.scrapeSecretKey" . }}
+          name: {{ include "searxng.relay.scrapeSecretName" $inst }}
+          key: {{ include "searxng.relay.scrapeSecretKey" $inst }}
       {{- with $sm.relabelings }}
       relabelings:
         {{- toYaml . | nindent 8 }}
@@ -94,6 +100,8 @@ spec:
       metricRelabelings:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+{{- end }}
+{{- end }}
 {{- end }}
 {{- if and .Values.valkey.enabled .Values.valkey.metrics.enabled }}
 {{- if $created }}

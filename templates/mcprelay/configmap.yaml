@@ -1,0 +1,28 @@
+{{- if and .Values.mcpRelay.enabled .Values.mcpRelay.config }}
+{{- include "searxng.relay.validate" . -}}
+{{/*
+Relay settings shared by every instance. Applied as the FIRST envFrom entry, so
+an instance's own ConfigMap overrides whatever it names here — that ordering is
+the whole point of the split: fleet-wide limits live in the chart, per-tenant
+behaviour lives with the tenant.
+
+Non-secret by construction: searxng.relay.validate refuses the credential-shaped
+keys, each of which has a Secret of its own.
+*/}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "searxng.relay.globalConfigName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "searxng.labels" . | nindent 4 }}
+    app.kubernetes.io/component: mcp-relay
+  {{- with .Values.commonAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+data:
+  {{- range $k, $v := .Values.mcpRelay.config }}
+  {{ $k }}: {{ $v | quote }}
+  {{- end }}
+{{- end }}

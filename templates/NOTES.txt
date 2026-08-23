@@ -23,7 +23,7 @@ Things worth checking
 --------------------------------------------------------------------------------
 {{- if .Values.networkPolicy.enabled }}
 
-[NetworkPolicy] Enabled. Ingress to :{{ (.Values.searxng.settings.server).port | default 8080 }} is allowed from:
+[NetworkPolicy] Enabled. Ingress to :{{ include "searxng.serverPort" . }} is allowed from:
 {{- if .Values.networkPolicy.ingress.allowSameNamespace }}
   - any pod in namespace {{ .Release.Namespace }}
 {{- end }}
@@ -45,7 +45,7 @@ Things worth checking
 
 [NetworkPolicy] DISABLED. Nothing restricts traffic to or from these pods.
 {{- end }}
-{{- if and .Values.networkPolicy.enabled (not .Values.valkey.enabled) (or .Values.valkey.external.url .Values.valkey.external.existingSecret) }}
+{{- if and .Values.networkPolicy.enabled (not .Values.valkey.enabled) .Values.valkey.external.existingSecret }}
 
 [valkey/netpol] You are using an external Valkey but egress rules are only
   generated for the bundled one, and the internet rule excludes private ranges.
@@ -55,24 +55,25 @@ Things worth checking
       ports:
         - {port: 6379, protocol: TCP}
 {{- end }}
-{{- if include "searxng.externalSettings" . }}
 
 [settings.yml] Mounted from Secret/{{ .Values.searxng.existingSettingsSecret }}, key
-  {{ .Values.searxng.existingSettingsSecretKey }}. searxng.settings is NOT rendered and NOT mounted.
-  The chart cannot edit that file, so these are yours to keep correct:
+  {{ .Values.searxng.existingSettingsSecretKey }}. The chart neither writes nor reads that file, so
+  these are yours to keep correct:
+    - use_default_settings: true, unless the file is a complete configuration
 {{- if .Values.mcpRelay.enabled }}
     - search.formats must include `json` — the relay cannot read results otherwise
 {{- end }}
 {{- if include "searxng.metricsEnabled" . }}
-    - general.enable_metrics: true and general.open_metrics: <searxng.metrics.password>
+    - general.enable_metrics: true, and general.open_metrics equal to the
+      password in Secret/{{ include "searxng.metricsSecretName" . }}
 {{- end }}
-    - server.port / server.limiter / server.public_instance are still read from
-      values ({{ (.Values.searxng.settings.server).port | default 8080 }}, limiter {{ if include "searxng.limiterEnabled" . }}on{{ else }}off{{ end }}) and drive the container
-      port, NetworkPolicy and limiter.toml. Keep values and file in sync.
+    - server.port {{ include "searxng.serverPort" . }} and server.limiter {{ if include "searxng.limiterEnabled" . }}on{{ else }}off{{ end }} are mirrored in values
+      (searxng.port, searxng.limiter.enabled / .publicInstance) because they
+      drive the container port, the probes, the NetworkPolicy and limiter.toml.
+      A disagreement leaves the probes pointed at a closed port.
   Editing that Secret does not roll the pods. Restart with:
     kubectl -n {{ .Release.Namespace }} rollout restart deployment/{{ include "searxng.fullname" . }}
-{{- end }}
-{{- if and (not .Values.searxng.existingSecret) (not .Values.searxng.secretKey) }}
+{{- if not .Values.searxng.existingSecret }}
 
 [secret_key] Auto-generated and stored in Secret/{{ include "searxng.fullname" . }}.
   It is preserved across `helm upgrade` by reading it back from the cluster.
@@ -111,26 +112,67 @@ Things worth checking
 {{- end }}
 
 {{- if .Values.mcpRelay.enabled }}
+{{- range $r := (include "searxng.relay.instanceList" $ | fromYamlArray) }}
+{{- $inst := dict "ctx" $ "relay" $r }}
 
-[MCP relay] Enabled at http://{{ include "searxng.relay.fullname" . }}.{{ .Release.Namespace }}.svc:{{ .Values.mcpRelay.service.port }}/
-  `json` has been added to search.formats automatically — the relay needs it.
-  Read a bearer token for a client with:
-    kubectl -n {{ .Release.Namespace }} get secret {{ include "searxng.relay.secretName" . }} \
-      -o jsonpath='{.data.{{ include "searxng.relay.secretKey" . }}}' | base64 -d
-{{- if not .Values.mcpRelay.ingress.enabled }}
-  No ingress for it, so it is cluster-internal only. Port-forward to try it:
-    kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "searxng.relay.fullname" . }} 8080:{{ .Values.mcpRelay.service.port }}
-{{- else if not .Values.mcpRelay.ingress.tls }}
-
-  >> The relay ingress has no TLS block. Bearer tokens would cross the network
-  >> in clear text. Add mcpRelay.ingress.tls before exposing this.
+[MCP relay: {{ $r.name }}] http://{{ include "searxng.relay.fullname" $inst }}.{{ $.Release.Namespace }}.svc:{{ $r.service.port }}/
+  search.formats in your settings.yml must include `json`, or every call fails.
+  Bearer tokens are generated into Secret/{{ include "searxng.relay.secretName" $inst }}, one
+  per identity. Read one out for a client with:
+    kubectl -n {{ $.Release.Namespace }} get secret {{ include "searxng.relay.secretName" $inst }} \
+      -o jsonpath='{.data.{{ include "searxng.relay.secretKey" $inst }}}' | base64 -d
+{{- if $r.existingConfigMap }}
+  Configured from ConfigMap/{{ $r.existingConfigMap }}{{ if $.Values.mcpRelay.config }}, layered over
+  ConfigMap/{{ include "searxng.relay.globalConfigName" $ }}{{ end }}. The chart does not read either, so
+  it cannot hash them: `kubectl rollout restart deployment/{{ include "searxng.relay.fullname" $inst }}`
+  after an edit.
+{{- else if $.Values.mcpRelay.config }}
+  Configured from ConfigMap/{{ include "searxng.relay.globalConfigName" $ }} (mcpRelay.config).
+  Give this instance its own `existingConfigMap` to override any of it.
 {{- end }}
-{{- if gt (int .Values.mcpRelay.replicaCount) 1 }}
-{{- if not .Values.mcpRelay.stateless }}
+{{- if $r.searxngTokens.existingSecret }}
+  Engine scope: the tokens in Secret/{{ $r.searxngTokens.existingSecret }}. Engines whose
+  `tokens:` list this instance cannot satisfy are invisible to it.
+{{- end }}
+{{- if not $r.ingress.enabled }}
+  No ingress, so it is cluster-internal only. Port-forward to try it:
+    kubectl -n {{ $.Release.Namespace }} port-forward svc/{{ include "searxng.relay.fullname" $inst }} 8080:{{ $r.service.port }}
+{{- else if not $r.ingress.tls }}
 
-  >> replicaCount > 1 with stateless=false. MCP sessions live in each pod's
-  >> memory, so a client's session ID is only valid on the pod that issued it.
-  >> Set mcpRelay.stateless=true, or add session affinity at the ingress.
+  >> This relay's ingress has no TLS block. Bearer tokens would cross the
+  >> network in clear text. Add tls to its ingress before exposing it.
+{{- end }}
+{{- if gt (int $r.replicaCount) 1 }}
+
+  >> replicaCount is {{ $r.replicaCount }}. MCP sessions live in each pod's memory, so a
+  >> client's session ID is only valid on the pod that issued it: put
+  >> MCP_STATELESS=true in this instance's ConfigMap, or add session affinity
+  >> at the ingress. The chart cannot read that ConfigMap, so it cannot check.
+{{- if not (include "searxng.relay.fenceKeyEnabled" $inst) }}
+  >> Each pod also signs <sec:fence> elements with its own key, generated at
+  >> start, so a verifier facing the Service sees a different fingerprint per
+  >> pod and per rollout. Harmless unless something checks those signatures —
+  >> set fenceKey.existingSecret if it does.
+{{- end }}
+{{- end }}
+{{- if include "searxng.relay.fenceKeyEnabled" $inst }}
+  [fence] Signing key from Secret/{{ include "searxng.relay.fenceKeySecretName" $inst }}, mounted at
+    {{ include "searxng.relay.fenceKeyPath" $inst }}. Every replica signs identically and
+    keeps doing so across rollouts. The relay logs a warn line about it at
+    startup: a persistent key extends a leak's blast radius from one process
+    lifetime to whenever you rotate. Verifiers pin the fingerprint served at
+    /fence/public-key (unauthenticated — a public key is public); the image is
+    FROM scratch with no shell, so reach it from outside the pod:
+      kubectl -n {{ $.Release.Namespace }} port-forward svc/{{ include "searxng.relay.fullname" $inst }} 8080:{{ $r.service.port }}
+      curl -s localhost:8080/fence/public-key
+{{- end }}
+{{- if include "searxng.relay.healthTokenEnabled" $inst }}
+  [health] /health is gated by MCP_HEALTH_TOKEN, so the readiness probe runs
+    the relay's own `--healthcheck` self-probe instead of an HTTP GET — a
+    Kubernetes httpGet probe can only carry a literal header. Anything else
+    polling /health (a load balancer, an uptime monitor) must send the token:
+      kubectl -n {{ $.Release.Namespace }} get secret {{ include "searxng.relay.healthTokenSecretName" $inst }} \
+        -o jsonpath='{.data.{{ include "searxng.relay.healthTokenSecretKey" $inst }}}' | base64 -d
 {{- end }}
 {{- end }}
 {{- end }}
@@ -151,8 +193,12 @@ Things worth checking
 {{- if include "searxng.metricsEnabled" . }}
   - searxng      /metrics, OpenMetrics, basic auth
 {{- end }}
-{{- if and .Values.mcpRelay.enabled .Values.mcpRelay.metrics.enabled }}
-  - mcp-relay    /metrics, Prometheus text, bearer auth (identity "prometheus")
+{{- if .Values.mcpRelay.enabled }}
+{{- range $r := (include "searxng.relay.instanceList" $ | fromYamlArray) }}
+{{- if $r.metrics.enabled }}
+  - mcp-relay {{ $r.name }}  bearer auth from Secret/{{ include "searxng.relay.scrapeSecretName" (dict "ctx" $ "relay" $r) }}{{ if not $r.metrics.mcpIdentity }} (MCP_METRICS_TOKEN only){{ end }}
+{{- end }}
+{{- end }}
 {{- end }}
 {{- if and .Values.valkey.enabled .Values.valkey.metrics.enabled }}
   - valkey       redis_exporter sidecar on :{{ .Values.valkey.metrics.port }}, primary and replicas
@@ -169,14 +215,8 @@ Things worth checking
 {{- end }}
 {{- if include "searxng.metricsEnabled" . }}
 
-[metrics] The /metrics basic-auth password was written to
-  Secret/{{ include "searxng.settingsSecretName" . }} as open-metrics-password{{ if include "searxng.externalSettings" . }}.{{ else }}, and into
-  general.open_metrics inside settings.yml.{{ end }} Read it with:
-    kubectl -n {{ .Release.Namespace }} get secret {{ include "searxng.settingsSecretName" . }} \
-      -o jsonpath='{.data.open-metrics-password}' | base64 -d
-{{- if include "searxng.externalSettings" . }}
-  It is only what the ServiceMonitor sends. SearXNG checks it against
-  general.open_metrics in your own settings.yml, which the chart does not
-  write — the two must match, or every scrape 401s.
-{{- end }}
+[metrics] The ServiceMonitor presents the pair in Secret/{{ include "searxng.metricsSecretName" . }}
+  ({{ include "searxng.metricsSecretUsernameKey" . }} / {{ include "searxng.metricsSecretPasswordKey" . }}). SearXNG checks the password
+  against general.open_metrics in your own settings.yml, which the chart
+  neither writes nor reads — the two must match, or every scrape 401s.
 {{- end }}

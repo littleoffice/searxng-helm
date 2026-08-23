@@ -2,9 +2,10 @@
 # Deliberately kept out of the *-values.yaml glob so ct and the render jobs do
 # not try to lint it as a values overlay.
 #
-# server.port and server.limiter must agree with searxng.settings.server in the
-# scenario's values file: the chart still reads those from values to build the
-# container port, the probes and limiter.toml.
+# server.port and server.limiter must agree with searxng.port and
+# searxng.limiter.enabled in the scenario's values file: the chart reads those
+# from values to build the container port, the probes and limiter.toml, and it
+# cannot read this file.
 use_default_settings: true
 
 general:

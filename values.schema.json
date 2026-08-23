@@ -6,6 +6,105 @@
   "additionalProperties": false,
 
   "definitions": {
+    "mcpRelaySpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "The shape of one MCP relay. Used both for mcpRelay.defaults and for each entry in mcpRelay.instances, which additionally requires `name`.",
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+          "description": "Lowercase DNS-1123 label; it becomes part of every object this instance renders. The instance named `default` keeps the unsuffixed object names."
+        },
+        "existingConfigMap": {
+          "type": "string",
+          "description": "ConfigMap you manage whose keys become environment variables for this instance, layered over mcpRelay.config. The chart never reads it, so editing it does not roll the pods."
+        },
+        "replicaCount": { "type": "integer", "minimum": 0 },
+        "terminationGracePeriodSeconds": { "type": "integer", "minimum": 1 },
+        "auth": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "identities": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["name"],
+                "additionalProperties": false,
+                "properties": {
+                  "name": { "type": "string", "minLength": 1 }
+                }
+              }
+            },
+            "existingSecret": { "type": "string" },
+            "existingSecretKey": { "type": "string" }
+          }
+        },
+        "searxngTokens": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "existingSecret": { "type": "string" },
+            "existingSecretKey": { "type": "string" }
+          }
+        },
+        "fenceKey": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Ed25519 key used to sign <sec:fence> elements, from a Secret you manage. Mounted as a file and passed as FENCE_SIGNING_KEY_FILE. Unset means the relay generates an ephemeral key per process. There is no inline field: it is signing material.",
+          "properties": {
+            "existingSecret": { "type": "string" },
+            "existingSecretKey": { "type": "string" }
+          }
+        },
+        "healthToken": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Bearer token gating GET /health, from a Secret you manage; separate from the MCP tokens. Setting it switches the readiness probe to the relay's own --healthcheck self-probe. No inline field: it is a credential.",
+          "properties": {
+            "existingSecret": { "type": "string" },
+            "existingSecretKey": { "type": "string" }
+          }
+        },
+        "metrics": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "existingSecret": { "type": "string" },
+            "existingSecretKey": { "type": "string" },
+            "mcpIdentity": { "type": "boolean", "description": "Also add the scrape credential to the MCP token file as identity `prometheus`. Required by relay images that gate /metrics on the MCP token table (<= v1.3.0); turn off once yours gates it on MCP_METRICS_TOKEN." }
+          }
+        },
+        "resources": { "$ref": "#/definitions/resources" },
+        "service": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "type": "string",
+              "enum": ["ClusterIP", "NodePort", "LoadBalancer", "ExternalName"]
+            },
+            "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+            "annotations": { "type": "object" },
+            "labels": { "type": "object" }
+          }
+        },
+        "serviceAccount": { "$ref": "#/definitions/serviceAccount" },
+        "podDisruptionBudget": { "$ref": "#/definitions/podDisruptionBudget" },
+        "ingress": { "$ref": "#/definitions/ingress" },
+        "networkPolicy": { "type": "object" },
+        "extraEnv": { "type": "array", "items": { "type": "object" } },
+        "extraVolumes": { "type": "array", "items": { "type": "object" } },
+        "extraVolumeMounts": { "type": "array", "items": { "type": "object" } },
+        "nodeSelector": { "type": "object" },
+        "tolerations": { "type": "array", "items": { "type": "object" } },
+        "affinity": { "type": "object" },
+        "priorityClassName": { "type": "string" }
+      }
+    },
     "quantity": {
       "type": ["string", "integer"],
       "description": "A Kubernetes resource quantity, e.g. 100m, 256Mi, 1Gi."
@@ -259,21 +358,22 @@
       "properties": {
         "baseUrl": { "type": "string" },
         "bindAddress": { "type": "string", "minLength": 1 },
-        "secretKey": { "type": "string" },
         "existingSecret": { "type": "string" },
         "existingSecretKey": { "type": "string" },
         "metrics": {
           "type": "object",
           "additionalProperties": false,
+          "description": "SearXNG /metrics. The basic-auth pair comes from a Secret you manage; its password must equal general.open_metrics in your settings.yml, which the chart neither writes nor reads.",
           "properties": {
             "enabled": { "type": "boolean" },
-            "username": { "type": "string" },
-            "password": { "type": "string" }
+            "existingSecret": { "type": "string" },
+            "existingSecretUsernameKey": { "type": "string" },
+            "existingSecretPasswordKey": { "type": "string" }
           }
         },
         "existingSettingsSecret": {
           "type": "string",
-          "description": "Name of a Secret you manage that holds settings.yml. When set, searxng.settings is not rendered or mounted."
+          "description": "Name of a Secret you manage that holds settings.yml. Required: the chart does not render that file and refuses to render without this."
         },
         "existingSettingsSecretKey": {
           "type": "string",
@@ -281,13 +381,21 @@
           "description": "Key within existingSettingsSecret to project to /etc/searxng/settings.yml."
         },
         "settings": {
-          "type": "object",
-          "description": "Merged into settings.yml. Free-form: the shape is SearXNG's, not this chart's. Ignored when existingSettingsSecret is set."
+          "type": ["object", "null"],
+          "description": "REMOVED in chart 2.0.0. settings.yml is no longer rendered from values; it comes from existingSettingsSecret. Still accepted by the schema only so the render can fail with a migration message instead of a bare 'additional properties' error. server.port is now searxng.port; server.limiter / server.public_instance are now searxng.limiter.enabled / .publicInstance."
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535,
+          "description": "Port SearXNG listens on. Mirrors server.port in your settings.yml, which the chart cannot read; drives the container port, the probes and the NetworkPolicy."
         },
         "limiter": {
           "type": "object",
           "additionalProperties": false,
           "properties": {
+            "enabled": { "type": "boolean", "description": "Mirrors server.limiter in your settings.yml. Gates limiter.toml and makes Valkey mandatory." },
+            "publicInstance": { "type": "boolean", "description": "Mirrors server.public_instance in your settings.yml. Implies the limiter and turns on link_token." },
             "trustedProxies": { "type": "array", "items": { "type": "string" } },
             "passIp": { "type": "array", "items": { "type": "string" } },
             "blockIp": { "type": "array", "items": { "type": "string" } },
@@ -356,7 +464,6 @@
           "additionalProperties": false,
           "properties": {
             "enabled": { "type": "boolean" },
-            "password": { "type": "string" },
             "existingSecret": { "type": "string" },
             "existingSecretPasswordKey": { "type": "string" }
           }
@@ -385,7 +492,6 @@
           "type": "object",
           "additionalProperties": false,
           "properties": {
-            "url": { "type": "string" },
             "existingSecret": { "type": "string" },
             "existingSecretUrlKey": { "type": "string" }
           }
@@ -428,105 +534,27 @@
       "properties": {
         "enabled": { "type": "boolean" },
         "image": { "$ref": "#/definitions/image" },
-        "replicaCount": { "type": "integer", "minimum": 0 },
-        "stateless": { "type": "boolean" },
-        "auth": {
-          "type": "object",
-          "additionalProperties": false,
-          "properties": {
-            "identities": {
-              "type": "array",
-              "items": {
-                "type": "object",
-                "required": ["name"],
-                "additionalProperties": false,
-                "properties": {
-                  "name": { "type": "string", "minLength": 1 },
-                  "token": {
-                    "type": "string",
-                    "description": "Empty to generate. Otherwise at least 32 characters.",
-                    "pattern": "^(|.{32,})$"
-                  }
-                }
-              }
-            },
-            "existingSecret": { "type": "string" },
-            "existingSecretKey": { "type": "string" }
-          }
-        },
-        "searxngTokens": {
-          "type": "object",
-          "additionalProperties": false,
-          "properties": {
-            "tokens": { "type": "array", "items": { "type": "string" } },
-            "existingSecret": { "type": "string" },
-            "existingSecretKey": { "type": "string" }
-          }
-        },
-        "fetch": {
-          "type": "object",
-          "additionalProperties": false,
-          "properties": {
-            "allowedHosts": { "type": "array", "items": { "type": "string" } },
-            "allowedCIDRs": { "type": "array", "items": { "type": "string" } }
-          }
-        },
-        "rateLimit": {
-          "type": "object",
-          "additionalProperties": false,
-          "properties": {
-            "rps": { "type": ["integer", "number"], "minimum": 0 },
-            "burst": { "$ref": "#/definitions/intOrEmptyString" },
-            "exempt": { "type": "array", "items": { "type": "string" } }
-          }
-        },
-        "logLevel": { "type": "string", "enum": ["debug", "info", "warn", "error"] },
-        "logFormat": { "type": "string", "enum": ["json", "text"] },
-        "session": {
-          "type": "object",
-          "additionalProperties": false,
-          "properties": {
-            "maxAge": { "type": "string" },
-            "janitorInterval": { "type": "string" }
-          }
-        },
-        "metrics": {
-          "type": "object",
-          "additionalProperties": false,
-          "properties": {
-            "enabled": { "type": "boolean" },
-            "existingSecret": { "type": "string" },
-            "existingSecretKey": { "type": "string" }
-          }
-        },
-        "config": { "type": "object" },
-        "extraEnv": { "type": "array", "items": { "type": "object" } },
-        "extraVolumes": { "type": "array", "items": { "type": "object" } },
-        "extraVolumeMounts": { "type": "array", "items": { "type": "object" } },
         "podSecurityContext": { "$ref": "#/definitions/podSecurityContext" },
         "containerSecurityContext": { "$ref": "#/definitions/containerSecurityContext" },
-        "serviceAccount": { "$ref": "#/definitions/serviceAccount" },
-        "resources": { "$ref": "#/definitions/resources" },
-        "service": {
+        "config": {
           "type": "object",
-          "additionalProperties": false,
-          "properties": {
-            "type": {
-              "type": "string",
-              "enum": ["ClusterIP", "NodePort", "LoadBalancer", "ExternalName"]
-            },
-            "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
-            "annotations": { "type": "object" },
-            "labels": { "type": "object" }
-          }
+          "additionalProperties": { "type": "string" },
+          "description": "Relay settings shared by every instance, rendered into a ConfigMap and applied before each instance own ConfigMap. Non-secret only: credential-shaped keys are refused at render time."
         },
-        "podDisruptionBudget": { "$ref": "#/definitions/podDisruptionBudget" },
-        "ingress": { "$ref": "#/definitions/ingress" },
-        "networkPolicy": { "type": "object" },
-        "nodeSelector": { "type": "object" },
-        "tolerations": { "type": "array", "items": { "type": "object" } },
-        "affinity": { "type": "object" },
-        "priorityClassName": { "type": "string" }
+        "defaults": {
+          "allOf": [{ "$ref": "#/definitions/mcpRelaySpec" }],
+          "description": "Defaults for every entry in instances; each instance merges over these."
+        },
+        "instances": {
+          "type": "array",
+          "description": "One relay Deployment per entry, all against the SearXNG in this release.",
+          "items": {
+            "allOf": [
+              { "$ref": "#/definitions/mcpRelaySpec" },
+              { "type": "object", "required": ["name"] }
+            ]
+          }
+        }
       }
     },
 

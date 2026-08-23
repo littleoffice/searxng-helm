@@ -57,8 +57,13 @@ annotate() {
 }
 
 # Every image the chart can render, with every optional component on.
+#
+# The settings Secret name is a placeholder: the chart refuses to render
+# without one, and nothing here reads the object — only the image references in
+# the output matter.
 collect_images() {
   helm template searxng . \
+    --set searxng.existingSettingsSecret=scan-placeholder \
     --set mcpRelay.enabled=true \
     --set valkey.metrics.enabled=true \
   | grep -oE 'image: "[^"]+"' \

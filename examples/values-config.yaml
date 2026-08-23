@@ -1,87 +1,43 @@
 # The config-file side of things.
 #
-# The chart renders these objects for you — there is no "bring your own
-# ConfigMap" path, because the settings file has to stay in lockstep with the
-# env vars the chart injects:
+# settings.yml is NOT here: the chart neither renders nor ships one, so it
+# comes from a Secret you create. The body for this example lives beside it in
+# examples/settings.example.yml.
 #
-#   <release>-searxng-settings   settings.yml       <- searxng.settings  (Secret)
-#   <release>-searxng-limiter    limiter.toml       <- searxng.limiter (limiter on)
+#   kubectl -n search create secret generic searxng-settings \
+#     --from-file=settings.yml=examples/settings.example.yml
+#
+# What the chart does still render for you, because these have to stay in
+# lockstep with what it injects:
+#
+#   <release>-searxng-limiter    limiter.toml       <- searxng.limiter
 #   <release>-searxng-extra      arbitrary files    <- searxng.extraConfigFiles
 #
 # Inspect what you are about to get:
 #   helm template searxng ./searxng -f examples/values-config.yaml \
-#     -s templates/settings.yaml
+#     -s templates/configmap-limiter.yaml
 
 searxng:
   baseUrl: "https://search.example.com/"
 
-  settings:
-    use_default_settings: true
+  # --- settings.yml -----------------------------------------------------
+  # The Secret created above. The chart mounts its key at
+  # /etc/searxng/settings.yml and never reads it.
+  existingSettingsSecret: searxng-settings
+  existingSettingsSecretKey: settings.yml
 
-    general:
-      instance_name: "Example Search"
-      contact_url: false
-      donation_url: false
-      privacypolicy_url: false
-
-    server:
-      # Needs Valkey. The chart refuses to render without one.
-      limiter: true
-      public_instance: false
-      image_proxy: true
-      method: "POST"
-
-    ui:
-      static_use_hash: true
-      infinite_scroll: false
-
-    search:
-      safe_search: 1
-      autocomplete: "duckduckgo"
-      default_lang: "en"
-      formats:
-        - html
-        # mcpRelay adds `json` automatically if you enable it; listing it here
-        # too is harmless.
-
-    outgoing:
-      request_timeout: 4.0
-      max_request_timeout: 12.0
-
-    # --- custom / additional search providers ---------------------------
-    # Merged into the built-in list by `name` because use_default_settings is
-    # true. Use it to flip a shipped engine on or off, or to add your own.
-    engines:
-      # re-enable a built-in that ships disabled
-      - name: wikidata
-        disabled: false
-      # tune a built-in
-      - name: duckduckgo
-        timeout: 4.0
-      # turn one off entirely
-      - name: brave
-        disabled: true
-      # a private instance of a supported engine
-      - name: my gitea
-        engine: gitea
-        base_url: https://git.example.com
-        shortcut: gt
-        categories: [it, repos]
-        timeout: 5.0
-      # a plain JSON API via the generic engine
-      - name: internal docs
-        engine: json_engine
-        search_url: https://docs.internal.example.com/api/search?q={query}
-        results_query: results
-        url_query: url
-        title_query: title
-        content_query: excerpt
-        shortcut: doc
-        categories: [general]
-        timeout: 4.0
+  # The two settings the chart needs for objects outside that file. Keep them
+  # in step with server.port and server.limiter in examples/settings.example.yml
+  # — a disagreement leaves the probes pointed at a closed port, or the
+  # container starting without the limiter.toml it expects.
+  port: 8080
 
   # --- limiter.toml -----------------------------------------------------
   limiter:
+    # Mirrors server.limiter in settings.yml. Needs Valkey; the chart refuses
+    # to render without one.
+    enabled: true
+    publicInstance: false
     # MUST cover your ingress controller's pod network or every request is
     # attributed to one client. Narrow this to the controller's CIDR if you can.
     trustedProxies:

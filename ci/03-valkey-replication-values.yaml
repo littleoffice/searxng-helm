@@ -1,3 +1,7 @@
+# ci-pre-install: kubectl -n "$NAMESPACE" create secret generic ci-settings --from-file=ci/settings.yml
+#
+# `--from-file` keys the Secret by the file's basename, so the key is
+# settings.yml — which is what the values block at the bottom names.
 # Scenario: Valkey in replication mode, with the redis_exporter sidecar.
 #
 # Exercises the second StatefulSet, the replica Service, the replica PDB and
@@ -41,3 +45,13 @@ networkPolicy:
 
 tests:
   enabled: true
+
+searxng:
+  # The chart does not write settings.yml; the pre-install directive above
+  # creates the Secret holding it.
+  existingSettingsSecret: ci-settings
+  existingSettingsSecretKey: settings.yml
+  # Mirrors server.port / server.limiter in ci/settings.yml.
+  port: 8080
+  limiter:
+    enabled: false

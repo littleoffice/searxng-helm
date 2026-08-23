@@ -26,6 +26,14 @@ resources:
 searxng:
   existingSecret: gitops-searxng-secret
   existingSecretKey: secret-key
+  # Emitted by gen-secrets.sh alongside the credentials: settings.yml is one
+  # more object that has to exist before the chart is installed, which is the
+  # whole point of this scenario.
+  existingSettingsSecret: gitops-searxng-settings
+  existingSettingsSecretKey: settings.yml
+  port: 8080
+  limiter:
+    enabled: false
 
 valkey:
   enabled: true
@@ -37,22 +45,27 @@ valkey:
 
 mcpRelay:
   enabled: true
-  replicaCount: 1
-  auth:
-    existingSecret: gitops-searxng-mcp-relay
-    existingSecretKey: tokens
-  metrics:
-    enabled: true
-    existingSecret: gitops-searxng-mcp-relay-scrape
-    existingSecretKey: scrape-token
-  podDisruptionBudget:
-    enabled: false
-  resources:
-    requests:
-      cpu: 25m
-      memory: 64Mi
-    limits:
-      memory: 128Mi
+  defaults:
+    replicaCount: 1
+    podDisruptionBudget:
+      enabled: false
+    resources:
+      requests:
+        cpu: 25m
+        memory: 64Mi
+      limits:
+        memory: 128Mi
+  # One instance, keeping the unsuffixed object names — the Secrets below are
+  # created by gen-secrets.sh, which names them for a single relay.
+  instances:
+    - name: default
+      auth:
+        existingSecret: gitops-searxng-mcp-relay
+        existingSecretKey: tokens
+      metrics:
+        enabled: true
+        existingSecret: gitops-searxng-mcp-relay-scrape
+        existingSecretKey: scrape-token
 
 # The relay's ServiceMonitor would need the operator CRDs; the point of this
 # scenario is the credential plumbing, so leave them out.
