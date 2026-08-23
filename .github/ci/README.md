@@ -43,10 +43,14 @@ the `*-values.yaml` glob that ct and the render jobs iterate. Every scenario
 needs one of those now: the chart does not render settings.yml, so each has to
 create the Secret holding it before installing.
 
-`.github/ci/upgrade-1x-values.yaml` is the odd one out — 1.x-shaped values used
-only to install the *published* chart in the `upgrade-from-released` job, kept
-outside `ci/` precisely so nothing feeds it to the chart in this tree. Each scenario may carry directives in its leading
-comment block:
+The `upgrade-from-released` job installs the published chart and the working
+tree from the *same* scenario file, which holds only while the two share a
+values interface. Across a major that breaks it, that job needs an
+old-shaped values file for as long as the published release predates the
+break — and it has to be deleted with the release that follows, or the job
+starts installing the new chart with values it rejects.
+
+Each scenario may carry directives in its leading comment block:
 
 | Directive | Effect |
 | --- | --- |

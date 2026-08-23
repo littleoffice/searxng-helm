@@ -903,13 +903,15 @@ jobs:
       # `lookup` only works against a live cluster, so nothing before this
       # point can tell us.
       #
-      # 2.0.0 makes that a two-file job. settings.yml moved out of values and
-      # into a Secret, so the published chart is installed with the 1.x-shaped
-      # .github/ci/upgrade-1x-values.yaml and upgraded with the current
-      # ci/01-defaults-values.yaml -- which is exactly the migration a user
-      # performs, Secret first. The chart-owned <fullname>-settings object goes
-      # away in that jump by design, so the comparison is over the credentials
-      # that must survive it rather than over every Secret in the namespace.
+      # Both sides install from the same values file. That is only true while
+      # the published release and the working tree share a values interface —
+      # across 1.2.2 -> 2.0.0 they did not, and this job briefly needed a
+      # second, 1.x-shaped file to install the old side with. Once 2.0.0 was
+      # published that file made the job install 2.0.0 with values 2.0.0
+      # rejects, and it failed on main. If a future major breaks the interface
+      # again, add the old-shaped file back for exactly as long as the
+      # published release predates the break, and delete it with the release
+      # that follows.
       - name: Install the published version, then upgrade to this one
         if: steps.published.outputs.found == 'true'
         env:
@@ -920,10 +922,15 @@ jobs:
           ns=upgrade
           kubectl create namespace "${ns}"
 
+          # settings.yml comes from a Secret in both versions, so it has to
+          # exist before the first install, not between the two.
+          kubectl -n "${ns}" create secret generic ci-settings \
+            --from-file=ci/settings.yml
+
           helm install searxng "${CHART_REF}" \
             --version "${CHART_VERSION}" \
             --namespace "${ns}" \
-            --values .github/ci/upgrade-1x-values.yaml \
+            --values ci/01-defaults-values.yaml \
             --wait --timeout 10m
 
           # The credentials that have to come through the jump untouched: the
@@ -937,10 +944,6 @@ jobs:
           }
           before="$(creds)"
 
-          # The migration itself: settings.yml becomes a Secret the user owns.
-          kubectl -n "${ns}" create secret generic ci-settings \
-            --from-file=ci/settings.yml
-
           helm upgrade searxng . \
             --namespace "${ns}" \
             --values ci/01-defaults-values.yaml \
@@ -950,12 +953,6 @@ jobs:
 
           if [ "${before}" != "${after}" ]; then
             echo "credentials changed upgrading ${CHART_VERSION} -> working tree" >&2
-            exit 1
-          fi
-
-          # The chart's own settings Secret is gone, and nothing replaced it.
-          if kubectl -n "${ns}" get secret searxng-settings >/dev/null 2>&1; then
-            echo "the chart still owns a settings Secret after the upgrade" >&2
             exit 1
           fi
 
