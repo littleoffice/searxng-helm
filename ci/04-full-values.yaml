@@ -103,40 +103,65 @@ networkPolicy:
 
 mcpRelay:
   enabled: true
-  replicaCount: 1
-  stateless: false
-  auth:
-    identities:
-      - name: default
-  searxngTokens:
-    # Same value make-secrets.sh put on the private engine in the settings
-    # Secret, so the relay can actually reach it.
-    existingSecret: ci-relay-engine-tokens
-    existingSecretKey: searxng-tokens
-  rateLimit:
-    rps: 5
-  # Both from Secrets make-secrets.sh creates: the chart has no inline field
-  # for either, and the fence key is generated at install time rather than
-  # committed.
-  fenceKey:
-    existingSecret: ci-relay-fence
-    existingSecretKey: fence-key
-  # Gating /health switches the readiness probe to the relay's own
-  # --healthcheck self-probe, so this scenario fails if that probe is wrong:
-  # the pod never goes Ready and `helm install --wait` times out.
-  healthToken:
-    existingSecret: ci-relay-health
-    existingSecretKey: health-token
-  metrics:
-    enabled: true
-  podDisruptionBudget:
-    enabled: false
-  resources:
-    requests:
-      cpu: 25m
-      memory: 64Mi
-    limits:
-      memory: 128Mi
+
+  # Shared by both instances, and overridden by each one's ConfigMap where they
+  # disagree — which is the ordering this scenario is here to prove.
+  config:
+    MAX_PDF_BYTES: "20000000"
+    CACHE_TTL_SECONDS: "60"
+
+  defaults:
+    replicaCount: 1
+    resources:
+      requests:
+        cpu: 25m
+        memory: 64Mi
+      limits:
+        memory: 128Mi
+    podDisruptionBudget:
+      enabled: false
+
+  # Two relays against the one SearXNG: `default` keeps the unsuffixed object
+  # names a single-relay release has always had, `agents` proves the suffixed
+  # path — distinct Deployment, Service, ServiceAccount, NetworkPolicy, token
+  # Secret and selector.
+  instances:
+    - name: default
+      existingConfigMap: ci-relay-default-config
+      auth:
+        identities:
+          - name: default
+      searxngTokens:
+        existingSecret: ci-relay-engine-tokens
+        existingSecretKey: searxng-tokens
+      # Both from Secrets make-secrets.sh creates; the chart has no inline
+      # field for either, and the fence key is generated at install time
+      # rather than committed.
+      fenceKey:
+        existingSecret: ci-relay-fence
+        existingSecretKey: fence-key
+      # Gating /health switches the readiness probe to the relay's own
+      # --healthcheck self-probe, so this scenario fails if that probe is
+      # wrong: the pod never goes Ready and `helm install --wait` times out.
+      healthToken:
+        existingSecret: ci-relay-health
+        existingSecretKey: health-token
+      metrics:
+        enabled: true
+
+    - name: agents
+      existingConfigMap: ci-relay-agents-config
+      auth:
+        identities:
+          - name: agent-one
+          - name: agent-two
+      # A different engine token, so this instance reaches a different private
+      # engine than `default` — the multi-tenant boundary, enforced by SearXNG.
+      searxngTokens:
+        existingSecret: ci-relay-agents-engine-tokens
+        existingSecretKey: searxng-tokens
+      metrics:
+        enabled: false
 
 metrics:
   serviceMonitor:

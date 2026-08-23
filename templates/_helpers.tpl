@@ -345,8 +345,14 @@ agreeing, rather than about what is in it.
 {{- end -}}
 {{- end -}}
 {{- if .Values.metrics.serviceMonitor.enabled -}}
-{{- if not (or (include "searxng.metricsEnabled" .) (and .Values.mcpRelay.enabled .Values.mcpRelay.metrics.enabled) (and .Values.valkey.enabled .Values.valkey.metrics.enabled)) -}}
-{{- fail "metrics.serviceMonitor.enabled is true but no component exposes metrics. Enable at least one of searxng.metrics.enabled, mcpRelay.metrics.enabled, valkey.metrics.enabled." -}}
+{{- $anyRelayMetrics := false -}}
+{{- if .Values.mcpRelay.enabled -}}
+{{- range $r := (include "searxng.relay.instanceList" . | fromYamlArray) -}}
+{{- if $r.metrics.enabled -}}{{- $anyRelayMetrics = true -}}{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- if not (or (include "searxng.metricsEnabled" .) $anyRelayMetrics (and .Values.valkey.enabled .Values.valkey.metrics.enabled)) -}}
+{{- fail "metrics.serviceMonitor.enabled is true but no component exposes metrics. Enable at least one of searxng.metrics.enabled, an mcpRelay instance's metrics.enabled, or valkey.metrics.enabled." -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}
@@ -355,19 +361,65 @@ agreeing, rather than about what is in it.
 {{/* MCP relay                                                           */}}
 {{/* ------------------------------------------------------------------ */}}
 
+{{/* ------------------------------------------------------------------ */}}
+{{/* MCP relay instances                                                 */}}
+{{/* ------------------------------------------------------------------ */}}
+
+{{/*
+The relay instances, each one `mcpRelay.defaults` with that instance's entry
+merged over it, emitted as YAML. Every relay template iterates this:
+
+  {{- range $r := (include "searxng.relay.instanceList" $ | fromYamlArray) }}
+
+Helpers below then take (dict "ctx" $ "relay" $r) rather than the root context,
+because "the relay" is no longer a single place in .Values.
+*/}}
+{{- define "searxng.relay.instanceList" -}}
+{{- $out := list -}}
+{{- range .Values.mcpRelay.instances -}}
+{{- $merged := mergeOverwrite (deepCopy $.Values.mcpRelay.defaults) (deepCopy .) -}}
+{{- $out = append $out $merged -}}
+{{- end -}}
+{{- toYaml $out -}}
+{{- end -}}
+
+{{/*
+Object name for one instance. The instance named `default` keeps the
+unsuffixed name this chart has always used, so a single-relay release upgrading
+into the instances model does not have to replace its Deployment — whose
+selector is immutable.
+*/}}
 {{- define "searxng.relay.fullname" -}}
-{{- printf "%s-mcp-relay" (include "searxng.fullname" .) | trunc 63 | trimSuffix "-" -}}
+{{- $base := printf "%s-mcp-relay" (include "searxng.fullname" .ctx) -}}
+{{- if eq .relay.name "default" -}}
+{{- $base | trunc 63 | trimSuffix "-" -}}
+{{- else -}}
+{{- printf "%s-%s" $base .relay.name | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+The component label carries the instance, which is what makes each instance's
+selectors distinct without introducing a label key of its own — and keeps the
+`default` instance's selector byte-identical to the pre-instances chart.
+*/}}
+{{- define "searxng.relay.component" -}}
+{{- if eq .relay.name "default" -}}
+mcp-relay
+{{- else -}}
+{{- printf "mcp-relay-%s" .relay.name -}}
+{{- end -}}
 {{- end -}}
 
 {{- define "searxng.relay.selectorLabels" -}}
-app.kubernetes.io/name: {{ include "searxng.name" . }}
-app.kubernetes.io/instance: {{ .Release.Name }}
-app.kubernetes.io/component: mcp-relay
+app.kubernetes.io/name: {{ include "searxng.name" .ctx }}
+app.kubernetes.io/instance: {{ .ctx.Release.Name }}
+app.kubernetes.io/component: {{ include "searxng.relay.component" . }}
 {{- end -}}
 
 {{- define "searxng.relay.labels" -}}
-{{ include "searxng.labels" . }}
-app.kubernetes.io/component: mcp-relay
+{{ include "searxng.labels" .ctx }}
+app.kubernetes.io/component: {{ include "searxng.relay.component" . }}
 {{- end -}}
 
 {{- define "searxng.relay.image" -}}
@@ -380,24 +432,24 @@ app.kubernetes.io/component: mcp-relay
 {{- end -}}
 
 {{- define "searxng.relay.serviceAccountName" -}}
-{{- if .Values.mcpRelay.serviceAccount.create -}}
-{{- default (include "searxng.relay.fullname" .) .Values.mcpRelay.serviceAccount.name -}}
+{{- if .relay.serviceAccount.create -}}
+{{- default (include "searxng.relay.fullname" .) .relay.serviceAccount.name -}}
 {{- else -}}
-{{- default "default" .Values.mcpRelay.serviceAccount.name -}}
+{{- default "default" .relay.serviceAccount.name -}}
 {{- end -}}
 {{- end -}}
 
 {{- define "searxng.relay.secretName" -}}
-{{- if .Values.mcpRelay.auth.existingSecret -}}
-{{- .Values.mcpRelay.auth.existingSecret -}}
+{{- if .relay.auth.existingSecret -}}
+{{- .relay.auth.existingSecret -}}
 {{- else -}}
 {{- include "searxng.relay.fullname" . -}}
 {{- end -}}
 {{- end -}}
 
 {{- define "searxng.relay.secretKey" -}}
-{{- if .Values.mcpRelay.auth.existingSecret -}}
-{{- .Values.mcpRelay.auth.existingSecretKey -}}
+{{- if .relay.auth.existingSecret -}}
+{{- .relay.auth.existingSecretKey -}}
 {{- else -}}
 tokens
 {{- end -}}
@@ -409,11 +461,18 @@ Tokens already present in the cluster are reused so that upgrading the chart
 does not invalidate every configured MCP client.
 */}}
 {{- define "searxng.relay.tokenFile" -}}
-{{- if not (hasKey .Values "__memo") -}}{{- $_ := set .Values "__memo" dict -}}{{- end -}}
-{{- $memo := index .Values "__memo" -}}
-{{- if not (hasKey $memo "relayTokenFile") -}}
+{{- $ctx := .ctx -}}
+{{- $r := .relay -}}
+{{- if not (hasKey $ctx.Values "__memo") -}}{{- $_ := set $ctx.Values "__memo" dict -}}{{- end -}}
+{{- $memo := index $ctx.Values "__memo" -}}
+{{/*
+Memoised per instance. A single key here would hand every instance the first
+one's tokens, which is a silent authentication mix-up rather than an error.
+*/}}
+{{- $memoKey := printf "relayTokenFile:%s" $r.name -}}
+{{- if not (hasKey $memo $memoKey) -}}
 {{- $existingRaw := "" -}}
-{{- $sec := lookup "v1" "Secret" .Release.Namespace (include "searxng.relay.fullname" .) -}}
+{{- $sec := lookup "v1" "Secret" $ctx.Release.Namespace (include "searxng.relay.fullname" .) -}}
 {{- if $sec -}}
 {{- if $sec.data -}}
 {{- if hasKey $sec.data "tokens" -}}
@@ -430,7 +489,7 @@ does not invalidate every configured MCP client.
 {{- end -}}
 {{- end -}}
 {{- $out := list "# Managed by Helm. Each line is identity:token." -}}
-{{- range .Values.mcpRelay.auth.identities -}}
+{{- range $r.auth.identities -}}
 {{/*
 Generated, or carried over from the token file already in the cluster. There is
 no branch for a token supplied in values, because there is no field for one.
@@ -445,12 +504,12 @@ table, so the scraper's token has to be in it; newer ones gate /metrics on
 $MCP_METRICS_TOKEN alone, and dropping the identity is what stops a scraper
 from also being able to call the tools.
 */}}
-{{- if and .Values.mcpRelay.metrics.enabled .Values.mcpRelay.metrics.mcpIdentity -}}
+{{- if and $r.metrics.enabled $r.metrics.mcpIdentity -}}
 {{- $out = append $out (printf "%s:%s" (include "searxng.relay.scrapeIdentity" .) (include "searxng.relay.scrapeToken" .)) -}}
 {{- end -}}
-{{- $_ := set $memo "relayTokenFile" (join "\n" $out) -}}
+{{- $_ := set $memo $memoKey (join "\n" $out) -}}
 {{- end -}}
-{{- index $memo "relayTokenFile" -}}
+{{- index $memo $memoKey -}}
 {{- end -}}
 
 {{/*
@@ -459,23 +518,23 @@ Kept separate from the agent token file so read access to one does not imply
 read access to the other.
 */}}
 {{- define "searxng.relay.engineTokensSecretName" -}}
-{{- .Values.mcpRelay.searxngTokens.existingSecret -}}
+{{- .relay.searxngTokens.existingSecret -}}
 {{- end -}}
 
 {{- define "searxng.relay.engineTokensSecretKey" -}}
-{{- .Values.mcpRelay.searxngTokens.existingSecretKey -}}
+{{- .relay.searxngTokens.existingSecretKey -}}
 {{- end -}}
 
 {{/* Whether SEARXNG_TOKENS should be injected at all. */}}
 {{- define "searxng.relay.engineTokensEnabled" -}}
-{{- if .Values.mcpRelay.searxngTokens.existingSecret -}}
+{{- if .relay.searxngTokens.existingSecret -}}
 true
 {{- end -}}
 {{- end -}}
 
 {{/* URL of the in-cluster SearXNG service, as the relay should reach it. */}}
 {{- define "searxng.relay.searxngUrl" -}}
-{{- printf "http://%s.%s.svc:%v" (include "searxng.fullname" .) .Release.Namespace .Values.service.port -}}
+{{- printf "http://%s.%s.svc:%v" (include "searxng.fullname" .ctx) .ctx.Release.Namespace .ctx.Values.service.port -}}
 {{- end -}}
 
 {{/* ------------------------------------------------------------------ */}}
@@ -489,17 +548,17 @@ chart never renders the key: it is signing material, and a chart that accepted
 it inline would be accepting it in a values file.
 */}}
 {{- define "searxng.relay.fenceKeyEnabled" -}}
-{{- if .Values.mcpRelay.fenceKey.existingSecret -}}
+{{- if .relay.fenceKey.existingSecret -}}
 true
 {{- end -}}
 {{- end -}}
 
 {{- define "searxng.relay.fenceKeySecretName" -}}
-{{- .Values.mcpRelay.fenceKey.existingSecret -}}
+{{- .relay.fenceKey.existingSecret -}}
 {{- end -}}
 
 {{- define "searxng.relay.fenceKeySecretKey" -}}
-{{- .Values.mcpRelay.fenceKey.existingSecretKey -}}
+{{- .relay.fenceKey.existingSecretKey -}}
 {{- end -}}
 
 {{/*
@@ -511,57 +570,97 @@ does not exist in the image is the shape the rest of this chart uses too.
 {{- printf "/etc/mcp-fence/%s" (include "searxng.relay.fenceKeySecretKey" .) -}}
 {{- end -}}
 
+{{/*
+Environment variable names the chart sets itself, from objects it renders. A
+ConfigMap naming any of these is overridden rather than obeyed, because the
+container would otherwise be able to disagree with the Service, the mounted
+Secret or the SearXNG it is wired to. Listed here so the guard below and the
+documentation cannot drift apart.
+*/}}
+{{- define "searxng.relay.chartOwnedEnv" -}}
+MCP_PORT SEARXNG_URL MCP_AUTH_TOKEN_FILE FENCE_SIGNING_KEY_FILE SEARXNG_TOKENS MCP_HEALTH_TOKEN MCP_METRICS_TOKEN
+{{- end -}}
+
+{{/* Name of the ConfigMap holding mcpRelay.config, applied to every instance. */}}
+{{- define "searxng.relay.globalConfigName" -}}
+{{- printf "%s-mcp-relay-config" (include "searxng.fullname" .) | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+
 {{/* ------------------------------------------------------------------ */}}
 {{/* Relay /health token                                                 */}}
 {{/* ------------------------------------------------------------------ */}}
 
 {{/* Same shape as the fence key: named Secret or nothing. */}}
 {{- define "searxng.relay.healthTokenEnabled" -}}
-{{- if .Values.mcpRelay.healthToken.existingSecret -}}
+{{- if .relay.healthToken.existingSecret -}}
 true
 {{- end -}}
 {{- end -}}
 
 {{- define "searxng.relay.healthTokenSecretName" -}}
-{{- .Values.mcpRelay.healthToken.existingSecret -}}
+{{- .relay.healthToken.existingSecret -}}
 {{- end -}}
 
 {{- define "searxng.relay.healthTokenSecretKey" -}}
-{{- .Values.mcpRelay.healthToken.existingSecretKey -}}
+{{- .relay.healthToken.existingSecretKey -}}
 {{- end -}}
 
 {{/* Validation specific to the relay. */}}
 {{- define "searxng.relay.validate" -}}
 {{- if .Values.mcpRelay.enabled -}}
-{{- if not (or .Values.mcpRelay.auth.existingSecret .Values.mcpRelay.auth.identities) -}}
-{{- fail "mcpRelay: at least one auth identity is required. Set mcpRelay.auth.identities or mcpRelay.auth.existingSecret." -}}
+{{/*
+mcpRelay.config lands in a ConfigMap, which is not a place for credentials.
+Every one of these has a Secret of its own; refusing here keeps the rule that
+no values field anywhere takes secret material.
+*/}}
+{{- range $k, $v := .Values.mcpRelay.config -}}
+{{- if has $k (list "MCP_AUTH_TOKEN" "MCP_AUTH_TOKENS" "MCP_HEALTH_TOKEN" "MCP_METRICS_TOKEN" "SEARXNG_TOKENS" "FENCE_SIGNING_KEY" "AUTH_PASSWORD") -}}
+{{- fail (printf "mcpRelay.config.%s is a credential, and mcpRelay.config is rendered into a ConfigMap. Use the matching Secret instead: auth.existingSecret, healthToken.existingSecret, metrics.existingSecret, searxngTokens.existingSecret or fenceKey.existingSecret." $k) -}}
 {{- end -}}
-{{- range .Values.mcpRelay.auth.identities -}}
+{{- end -}}
+{{- if not .Values.mcpRelay.instances -}}
+{{- fail "mcpRelay.enabled is true but mcpRelay.instances is empty. One entry per relay Deployment; the shipped default is `- name: default`." -}}
+{{- end -}}
+{{- $seen := dict -}}
+{{- range $i, $inst := .Values.mcpRelay.instances -}}
+{{- $name := $inst.name | default "" -}}
+{{- if not $name -}}
+{{- fail (printf "mcpRelay.instances[%d] has no name. The name becomes part of every object this instance renders." $i) -}}
+{{- end -}}
+{{- if not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" $name) -}}
+{{- fail (printf "mcpRelay.instances[%d].name: %q must be a lowercase DNS-1123 label — it becomes a Kubernetes object name. Try %q." $i $name (lower $name | replace "_" "-")) -}}
+{{- end -}}
+{{- if hasKey $seen $name -}}
+{{- fail (printf "mcpRelay.instances[%d].name: %q is used twice. Instance names have to be unique — they name the Deployment, Service and Secrets." $i $name) -}}
+{{- end -}}
+{{- $_ := set $seen $name true -}}
+{{- end -}}
+{{- range $r := (include "searxng.relay.instanceList" . | fromYamlArray) -}}
+{{- $where := printf "mcpRelay instance %q" $r.name -}}
+{{- if not (or $r.auth.existingSecret $r.auth.identities) -}}
+{{- fail (printf "%s: at least one auth identity is required. Set auth.identities or auth.existingSecret." $where) -}}
+{{- end -}}
+{{- range $r.auth.identities -}}
 {{- if contains ":" .name -}}
-{{- fail (printf "mcpRelay: identity name %q must not contain a colon." .name) -}}
+{{- fail (printf "%s: identity name %q must not contain a colon." $where .name) -}}
 {{- end -}}
 {{- end -}}
-{{- if and .Values.mcpRelay.metrics.enabled .Values.mcpRelay.metrics.mcpIdentity .Values.mcpRelay.metrics.existingSecret (not .Values.mcpRelay.auth.existingSecret) -}}
-{{- fail "mcpRelay: metrics.existingSecret is set but auth.existingSecret is not, and metrics.mcpIdentity is on. That combination needs the scrape token to appear both in your Secret and on a `prometheus` line in the token file, and the chart cannot read your Secret to copy it there. Either manage both externally (see examples/gen-secrets.sh), let the chart manage both, or set metrics.mcpIdentity=false if your relay image gates /metrics on MCP_METRICS_TOKEN." -}}
+{{- if and $r.metrics.enabled $r.metrics.mcpIdentity $r.metrics.existingSecret (not $r.auth.existingSecret) -}}
+{{- fail (printf "%s: metrics.existingSecret is set but auth.existingSecret is not, and metrics.mcpIdentity is on. That combination needs the scrape token to appear both in your Secret and on a `prometheus` line in the token file, and the chart cannot read your Secret to copy it there. Either manage both externally, let the chart manage both, or set metrics.mcpIdentity=false if your relay image gates /metrics on MCP_METRICS_TOKEN." $where) -}}
 {{- end -}}
-{{- if and .Values.mcpRelay.fenceKey.existingSecret (not .Values.mcpRelay.fenceKey.existingSecretKey) -}}
-{{- fail "mcpRelay.fenceKey.existingSecretKey must not be empty when fenceKey.existingSecret is set: the chart has to know which key of your Secret to mount." -}}
+{{- if and $r.searxngTokens.existingSecret (not $r.searxngTokens.existingSecretKey) -}}
+{{- fail (printf "%s: searxngTokens.existingSecretKey must not be empty when searxngTokens.existingSecret is set." $where) -}}
 {{- end -}}
-{{- if and .Values.mcpRelay.healthToken.existingSecret (not .Values.mcpRelay.healthToken.existingSecretKey) -}}
-{{- fail "mcpRelay.healthToken.existingSecretKey must not be empty when healthToken.existingSecret is set: the chart has to know which key of your Secret to read MCP_HEALTH_TOKEN from." -}}
+{{- if and $r.fenceKey.existingSecret (not $r.fenceKey.existingSecretKey) -}}
+{{- fail (printf "%s: fenceKey.existingSecretKey must not be empty when fenceKey.existingSecret is set: the chart has to know which key of your Secret to mount." $where) -}}
 {{- end -}}
-{{- if and .Values.mcpRelay.fetch.proxyAll (not .Values.mcpRelay.fetch.proxy) -}}
-{{- fail "mcpRelay.fetch.proxyAll is true but mcpRelay.fetch.proxy is empty. The relay fails startup on that combination — there is nothing to route through. Set fetch.proxy, or turn proxyAll off." -}}
+{{- if and $r.healthToken.existingSecret (not $r.healthToken.existingSecretKey) -}}
+{{- fail (printf "%s: healthToken.existingSecretKey must not be empty when healthToken.existingSecret is set." $where) -}}
 {{- end -}}
-{{- if and .Values.mcpRelay.searxngTokens.existingSecret (not .Values.mcpRelay.searxngTokens.existingSecretKey) -}}
-{{- fail "mcpRelay.searxngTokens.existingSecretKey must not be empty when searxngTokens.existingSecret is set: the chart has to know which key holds the comma-separated token list." -}}
-{{- end -}}
-{{- if and .Values.mcpRelay.ingress.enabled (not .Values.mcpRelay.ingress.hosts) -}}
-{{- fail "mcpRelay.ingress.enabled is true but mcpRelay.ingress.hosts is empty." -}}
+{{- if and $r.ingress.enabled (not $r.ingress.hosts) -}}
+{{- fail (printf "%s: ingress.enabled is true but ingress.hosts is empty." $where) -}}
 {{- end -}}
 {{- end -}}
-{{- if and .Values.ingress.enabled (not .Values.ingress.hosts) -}}
-{{- fail "ingress.enabled is true but ingress.hosts is empty." -}}
 {{- end -}}
 {{- end -}}
 
@@ -580,7 +679,17 @@ Call with (dict "ctx" . "cfg" <the .networkPolicy.ingress map>).
 {{- $from = append $from (dict "namespaceSelector" (dict "matchLabels" (dict "kubernetes.io/metadata.name" .))) -}}
 {{- end -}}
 {{- $from = concat $from ($cfg.from | default list) -}}
+{{/*
+An empty list has to serialise as "[]", not as "null": the call sites skip the
+rule on "[]", and a NetworkPolicy ingress rule whose `from` is empty admits
+every source. `toYaml` on the empty list here yields null, so "deny" rendered
+as "allow from anywhere" — the exact inverse of what an empty allow-list means.
+*/}}
+{{- if not $from -}}
+[]
+{{- else -}}
 {{- toYaml $from -}}
+{{- end -}}
 {{- end -}}
 
 {{/* ------------------------------------------------------------------ */}}
@@ -800,25 +909,28 @@ the Secret is free to name its key anything.
 {{- define "searxng.relay.scrapeIdentity" -}}prometheus{{- end -}}
 
 {{- define "searxng.relay.scrapeSecretName" -}}
-{{- if .Values.mcpRelay.metrics.existingSecret -}}
-{{- .Values.mcpRelay.metrics.existingSecret -}}
+{{- if .relay.metrics.existingSecret -}}
+{{- .relay.metrics.existingSecret -}}
 {{- else -}}
 {{- printf "%s-scrape" (include "searxng.relay.fullname" .) | trunc 63 | trimSuffix "-" -}}
 {{- end -}}
 {{- end -}}
 
 {{- define "searxng.relay.scrapeSecretKey" -}}
-{{- if .Values.mcpRelay.metrics.existingSecret -}}
-{{- .Values.mcpRelay.metrics.existingSecretKey -}}
+{{- if .relay.metrics.existingSecret -}}
+{{- .relay.metrics.existingSecretKey -}}
 {{- else -}}
 scrape-token
 {{- end -}}
 {{- end -}}
 
 {{- define "searxng.relay.scrapeToken" -}}
-{{- if not (hasKey .Values "__memo") -}}{{- $_ := set .Values "__memo" dict -}}{{- end -}}
-{{- $memo := index .Values "__memo" -}}
-{{- if not (hasKey $memo "relayScrapeToken") -}}
+{{- $ctx := .ctx -}}
+{{- if not (hasKey $ctx.Values "__memo") -}}{{- $_ := set $ctx.Values "__memo" dict -}}{{- end -}}
+{{- $memo := index $ctx.Values "__memo" -}}
+{{/* Per instance, for the same reason the token file is. */}}
+{{- $memoKey := printf "relayScrapeToken:%s" .relay.name -}}
+{{- if not (hasKey $memo $memoKey) -}}
 {{- $value := "" -}}
 {{/*
 Resolve the object and key through the same helpers the Secret itself uses,
@@ -828,7 +940,7 @@ into the token file, which is not the one Prometheus presents.
 */}}
 {{- $name := include "searxng.relay.scrapeSecretName" . -}}
 {{- $key := include "searxng.relay.scrapeSecretKey" . -}}
-{{- $sec := lookup "v1" "Secret" .Release.Namespace $name -}}
+{{- $sec := lookup "v1" "Secret" $ctx.Release.Namespace $name -}}
 {{- if $sec -}}
 {{- if $sec.data -}}
 {{- if hasKey $sec.data $key -}}
@@ -837,7 +949,7 @@ into the token file, which is not the one Prometheus presents.
 {{- end -}}
 {{- end -}}
 {{- if not $value -}}{{- $value = randAlphaNum 64 -}}{{- end -}}
-{{- $_ := set $memo "relayScrapeToken" $value -}}
+{{- $_ := set $memo $memoKey $value -}}
 {{- end -}}
-{{- index $memo "relayScrapeToken" -}}
+{{- index $memo $memoKey -}}
 {{- end -}}

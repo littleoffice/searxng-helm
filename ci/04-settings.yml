@@ -36,8 +36,16 @@ search:
 # Private engine, invisible to any caller that does not present the token. The
 # relay is given the same value through mcpRelay.searxngTokens.
 engines:
+  # One private engine per relay instance. Each is invisible to any caller that
+  # does not present its token, so the `default` and `agents` relays reach
+  # different engines on this one SearXNG.
   - name: ci-private
     engine: duckduckgo
     shortcut: cip
     disabled: true
     tokens: ["@ENGINE_TOKEN@"]
+  - name: ci-private-agents
+    engine: duckduckgo
+    shortcut: cipa
+    disabled: true
+    tokens: ["@AGENTS_ENGINE_TOKEN@"]

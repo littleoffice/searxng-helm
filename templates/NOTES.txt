@@ -112,65 +112,67 @@ Things worth checking
 {{- end }}
 
 {{- if .Values.mcpRelay.enabled }}
+{{- range $r := (include "searxng.relay.instanceList" $ | fromYamlArray) }}
+{{- $inst := dict "ctx" $ "relay" $r }}
 
-[MCP relay] Enabled at http://{{ include "searxng.relay.fullname" . }}.{{ .Release.Namespace }}.svc:{{ .Values.mcpRelay.service.port }}/
+[MCP relay: {{ $r.name }}] http://{{ include "searxng.relay.fullname" $inst }}.{{ $.Release.Namespace }}.svc:{{ $r.service.port }}/
   search.formats in your settings.yml must include `json`, or every call fails.
-  Bearer tokens are generated into Secret/{{ include "searxng.relay.secretName" . }}, one per
-  identity. Read one out for a client with:
-    kubectl -n {{ .Release.Namespace }} get secret {{ include "searxng.relay.secretName" . }} \
-      -o jsonpath='{.data.{{ include "searxng.relay.secretKey" . }}}' | base64 -d
-{{- if not .Values.mcpRelay.ingress.enabled }}
-  No ingress for it, so it is cluster-internal only. Port-forward to try it:
-    kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "searxng.relay.fullname" . }} 8080:{{ .Values.mcpRelay.service.port }}
-{{- else if not .Values.mcpRelay.ingress.tls }}
+  Bearer tokens are generated into Secret/{{ include "searxng.relay.secretName" $inst }}, one
+  per identity. Read one out for a client with:
+    kubectl -n {{ $.Release.Namespace }} get secret {{ include "searxng.relay.secretName" $inst }} \
+      -o jsonpath='{.data.{{ include "searxng.relay.secretKey" $inst }}}' | base64 -d
+{{- if $r.existingConfigMap }}
+  Configured from ConfigMap/{{ $r.existingConfigMap }}{{ if $.Values.mcpRelay.config }}, layered over
+  ConfigMap/{{ include "searxng.relay.globalConfigName" $ }}{{ end }}. The chart does not read either, so
+  it cannot hash them: `kubectl rollout restart deployment/{{ include "searxng.relay.fullname" $inst }}`
+  after an edit.
+{{- else if $.Values.mcpRelay.config }}
+  Configured from ConfigMap/{{ include "searxng.relay.globalConfigName" $ }} (mcpRelay.config).
+  Give this instance its own `existingConfigMap` to override any of it.
+{{- end }}
+{{- if $r.searxngTokens.existingSecret }}
+  Engine scope: the tokens in Secret/{{ $r.searxngTokens.existingSecret }}. Engines whose
+  `tokens:` list this instance cannot satisfy are invisible to it.
+{{- end }}
+{{- if not $r.ingress.enabled }}
+  No ingress, so it is cluster-internal only. Port-forward to try it:
+    kubectl -n {{ $.Release.Namespace }} port-forward svc/{{ include "searxng.relay.fullname" $inst }} 8080:{{ $r.service.port }}
+{{- else if not $r.ingress.tls }}
 
-  >> The relay ingress has no TLS block. Bearer tokens would cross the network
-  >> in clear text. Add mcpRelay.ingress.tls before exposing this.
+  >> This relay's ingress has no TLS block. Bearer tokens would cross the
+  >> network in clear text. Add tls to its ingress before exposing it.
 {{- end }}
-{{- if gt (int .Values.mcpRelay.replicaCount) 1 }}
-{{- if not .Values.mcpRelay.stateless }}
+{{- if gt (int $r.replicaCount) 1 }}
 
-  >> replicaCount > 1 with stateless=false. MCP sessions live in each pod's
-  >> memory, so a client's session ID is only valid on the pod that issued it.
-  >> Set mcpRelay.stateless=true, or add session affinity at the ingress.
+  >> replicaCount is {{ $r.replicaCount }}. MCP sessions live in each pod's memory, so a
+  >> client's session ID is only valid on the pod that issued it: put
+  >> MCP_STATELESS=true in this instance's ConfigMap, or add session affinity
+  >> at the ingress. The chart cannot read that ConfigMap, so it cannot check.
+{{- if not (include "searxng.relay.fenceKeyEnabled" $inst) }}
+  >> Each pod also signs <sec:fence> elements with its own key, generated at
+  >> start, so a verifier facing the Service sees a different fingerprint per
+  >> pod and per rollout. Harmless unless something checks those signatures —
+  >> set fenceKey.existingSecret if it does.
 {{- end }}
-{{- if not (include "searxng.relay.fenceKeyEnabled" .) }}
-
-  >> replicaCount > 1 with no mcpRelay.fenceKey. Each pod signs <sec:fence>
-  >> elements with its own key, generated at start, so a verifier facing the
-  >> Service sees a different fingerprint per pod and per rollout. Harmless
-  >> unless something checks those signatures — supply a key if it does.
 {{- end }}
-{{- end }}
-{{- if include "searxng.relay.fenceKeyEnabled" . }}
-  [fence] Signing key from Secret/{{ include "searxng.relay.fenceKeySecretName" . }}, mounted at
-    {{ include "searxng.relay.fenceKeyPath" . }}. Every replica signs identically and keeps
-    doing so across rollouts. The relay logs a warn line about it at startup:
-    a persistent key extends a leak's blast radius from one process lifetime
-    to whenever you rotate. Verifiers pin the fingerprint served at
+{{- if include "searxng.relay.fenceKeyEnabled" $inst }}
+  [fence] Signing key from Secret/{{ include "searxng.relay.fenceKeySecretName" $inst }}, mounted at
+    {{ include "searxng.relay.fenceKeyPath" $inst }}. Every replica signs identically and
+    keeps doing so across rollouts. The relay logs a warn line about it at
+    startup: a persistent key extends a leak's blast radius from one process
+    lifetime to whenever you rotate. Verifiers pin the fingerprint served at
     /fence/public-key (unauthenticated — a public key is public); the image is
     FROM scratch with no shell, so reach it from outside the pod:
-      kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "searxng.relay.fullname" . }} 8080:{{ .Values.mcpRelay.service.port }}
+      kubectl -n {{ $.Release.Namespace }} port-forward svc/{{ include "searxng.relay.fullname" $inst }} 8080:{{ $r.service.port }}
       curl -s localhost:8080/fence/public-key
 {{- end }}
-{{- if include "searxng.relay.healthTokenEnabled" . }}
+{{- if include "searxng.relay.healthTokenEnabled" $inst }}
   [health] /health is gated by MCP_HEALTH_TOKEN, so the readiness probe runs
     the relay's own `--healthcheck` self-probe instead of an HTTP GET — a
     Kubernetes httpGet probe can only carry a literal header. Anything else
     polling /health (a load balancer, an uptime monitor) must send the token:
-      kubectl -n {{ .Release.Namespace }} get secret {{ include "searxng.relay.healthTokenSecretName" . }} \
-        -o jsonpath='{.data.{{ include "searxng.relay.healthTokenSecretKey" . }}}' | base64 -d
-{{- end }}
-{{- if .Values.mcpRelay.fetch.proxy }}
-  [fetch proxy] {{ .Values.mcpRelay.fetch.proxy }}{{ if .Values.mcpRelay.fetch.proxyAll }} for every fetch{{ else }} for allowedHosts only{{ end }}.
-{{- if .Values.mcpRelay.fetch.proxyAll }}
-    With proxyAll the per-IP SSRF policy is the proxy's job now: fetch
-    allowedCIDRs and the relay's public-IP check no longer apply.
-{{- end }}
-{{- if .Values.networkPolicy.enabled }}
-    NetworkPolicy is on and its internet rule excludes private ranges, so a
-    proxy on a private address needs a rule under
-    mcpRelay.networkPolicy.egress.extra.
+      kubectl -n {{ $.Release.Namespace }} get secret {{ include "searxng.relay.healthTokenSecretName" $inst }} \
+        -o jsonpath='{.data.{{ include "searxng.relay.healthTokenSecretKey" $inst }}}' | base64 -d
 {{- end }}
 {{- end }}
 {{- end }}
@@ -191,9 +193,12 @@ Things worth checking
 {{- if include "searxng.metricsEnabled" . }}
   - searxng      /metrics, OpenMetrics, basic auth
 {{- end }}
-{{- if and .Values.mcpRelay.enabled .Values.mcpRelay.metrics.enabled }}
-  - mcp-relay    /metrics, Prometheus text, bearer auth from
-                 Secret/{{ include "searxng.relay.scrapeSecretName" . }}{{ if not .Values.mcpRelay.metrics.mcpIdentity }} (MCP_METRICS_TOKEN only){{ end }}
+{{- if .Values.mcpRelay.enabled }}
+{{- range $r := (include "searxng.relay.instanceList" $ | fromYamlArray) }}
+{{- if $r.metrics.enabled }}
+  - mcp-relay {{ $r.name }}  bearer auth from Secret/{{ include "searxng.relay.scrapeSecretName" (dict "ctx" $ "relay" $r) }}{{ if not $r.metrics.mcpIdentity }} (MCP_METRICS_TOKEN only){{ end }}
+{{- end }}
+{{- end }}
 {{- end }}
 {{- if and .Values.valkey.enabled .Values.valkey.metrics.enabled }}
   - valkey       redis_exporter sidecar on :{{ .Values.valkey.metrics.port }}, primary and replicas

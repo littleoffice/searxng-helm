@@ -34,6 +34,8 @@ helm install <release> ./searxng -n <namespace> -f examples/values-production.ya
 | `settings.example.yml` | A worked settings.yml, for the Secret the chart mounts. |
 | `values-config.yaml` | limiter.toml, extra files, and how to point at that Secret. |
 | `values-production.yaml` | Everything on, all credentials external, GitOps-safe. |
+| `values-multi-tenant.yaml` | Two teams, one SearXNG, a relay instance each. |
+| `relay-config.example.yaml` | A worked relay ConfigMap for one instance. |
 
 ## Install
 
@@ -215,11 +217,11 @@ release history:
 | `secret_key` | generated, or `searxng.existingSecret` |
 | Valkey password | generated, or `valkey.auth.existingSecret` |
 | External Valkey URL (carries a password) | `valkey.external.existingSecret` |
-| Relay bearer tokens | generated, or `mcpRelay.auth.existingSecret` |
-| Relay scrape credential | generated, or `mcpRelay.metrics.existingSecret` |
-| SearXNG private-engine tokens | `mcpRelay.searxngTokens.existingSecret` |
-| Relay fence signing key | `mcpRelay.fenceKey.existingSecret` |
-| Relay `/health` token | `mcpRelay.healthToken.existingSecret` |
+| Relay bearer tokens | generated per instance, or `instances[].auth.existingSecret` |
+| Relay scrape credential | generated per instance, or `instances[].metrics.existingSecret` |
+| SearXNG private-engine tokens | `instances[].searxngTokens.existingSecret` |
+| Relay fence signing key | `instances[].fenceKey.existingSecret` |
+| Relay `/health` token | `instances[].healthToken.existingSecret` |
 
 The schema rejects the old inline fields rather than ignoring them, so a 1.x
 values file naming one fails the render instead of quietly dropping a
@@ -506,18 +508,29 @@ SSRF-protected URL fetching.
 ```yaml
 mcpRelay:
   enabled: true
-  auth:
-    identities:
-      - name: claude-desktop
-      - name: agent-ci
+  instances:
+    - name: default
+      existingConfigMap: relay-config
+      auth:
+        identities:
+          - name: claude-desktop
+          - name: agent-ci
 ```
 
-Identities are names only: each token is generated into
-`<release>-searxng-mcp-relay` and preserved across upgrades, because a token in
-a values file is a token in git. Bring your own with
-`mcpRelay.auth.existingSecret`, whose Secret holds the `identity:token` file.
+Two words that are easy to confuse, and this chart uses both:
 
-Enabling it wires up, without you doing anything else:
+- an **instance** is one relay Deployment, with its own tokens, engine scope,
+  config and ingress;
+- an **identity** is one caller of an instance — a row in that instance's token
+  file, used as an audit label and a rate-limit bucket.
+
+Identities of one instance share that instance's engine scope, so callers that
+must not reach each other's engines need separate instances. Identity names are
+names only: each token is generated into that instance's Secret and preserved
+across upgrades, because a token in a values file is a token in git. Bring your
+own with `auth.existingSecret`, whose Secret holds the `identity:token` file.
+
+Enabling it wires up, per instance, without you doing anything else:
 
 - `SEARXNG_URL` pointed at this release's SearXNG Service
 - a Secret holding `identity:token` lines, mounted at `/etc/mcp-auth/tokens`
@@ -529,16 +542,91 @@ One thing it cannot do for you: `search.formats` in your settings.yml must
 contain `json`, or the relay gets HTML back and fails every call. The chart does
 not write that file, so it cannot add it.
 
+### Where a relay's configuration comes from
+
+Nothing non-secret about a relay lives in values. Each instance names a
+ConfigMap you manage, whose keys become environment variables:
+
+```console
+kubectl -n <ns> create configmap relay-config \
+  --from-literal=MCP_RATE_LIMIT_RPS=5 \
+  --from-literal=LOG_LEVEL=info \
+  --from-literal=MCP_STATELESS=true
+```
+
+Four layers, and Kubernetes decides the winner — later `envFrom` entries beat
+earlier ones, explicit `env` beats every `envFrom`:
+
+| Layer | Source | Notes |
+| --- | --- | --- |
+| 1 | `mcpRelay.config` | Rendered into `<release>-searxng-mcp-relay-config` and applied to every instance. Fleet-wide limits. |
+| 2 | `instances[].existingConfigMap` | Yours. Overrides layer 1 for that instance. |
+| 3 | chart-owned `env` | `MCP_PORT`, `SEARXNG_URL`, `MCP_AUTH_TOKEN_FILE`, `FENCE_SIGNING_KEY_FILE`, and the `secretKeyRef`s for `SEARXNG_TOKENS`, `MCP_HEALTH_TOKEN`, `MCP_METRICS_TOKEN`. Naming any of these in a ConfigMap is ignored — the container would otherwise be able to disagree with the Service, the mounted Secret, or the SearXNG it is wired to. |
+| 4 | `instances[].extraEnv` | For a `valueFrom` the chart does not model. Wins over everything. |
+
+Two consequences worth stating. The chart cannot read a ConfigMap, so it cannot
+validate what is in one: a bad `LOG_LEVEL` or `FETCH_PROXY_ALL` without
+`FETCH_PROXY` fails the relay's own startup rather than the render. And it
+cannot hash one either, so editing it does not roll the pods —
+`kubectl rollout restart deployment/<release>-searxng-mcp-relay[-<instance>]`.
+
+`mcpRelay.config` is guarded: credential-shaped keys (`MCP_AUTH_TOKEN`,
+`MCP_METRICS_TOKEN`, `SEARXNG_TOKENS`, `FENCE_SIGNING_KEY`, …) are refused,
+because that map ends up in a ConfigMap and each of them has a Secret of its
+own.
+
+### Several relays, one SearXNG
+
+Each entry in `instances` is a relay Deployment of its own — its own Service,
+ServiceAccount, NetworkPolicy, token Secret and ingress — all against the one
+SearXNG in the release. That is how two teams share an instance without sharing
+engines:
+
+```yaml
+mcpRelay:
+  enabled: true
+  config:
+    MAX_PDF_BYTES: "50000000"        # both instances
+  defaults:
+    replicaCount: 1                  # every instance, unless it says otherwise
+  instances:
+    - name: team-a
+      existingConfigMap: relay-team-a-config
+      searxngTokens:
+        existingSecret: relay-team-a-engines
+      auth:
+        identities:
+          - name: claude-desktop
+          - name: ci-agent
+      replicaCount: 2                # MCP_STATELESS=true in its ConfigMap
+    - name: team-b
+      existingConfigMap: relay-team-b-config
+      searxngTokens:
+        existingSecret: relay-team-b-engines
+```
+
+Each team's engine token unlocks only the engines whose `tokens:` list carries
+it, and SearXNG enforces that after resolving the whole engine reference list —
+categories, the `engines` parameter and `!bang` syntax alike. `searxng_read_url`
+does not use engine tokens at all, so keeping one team's relay away from
+another's hosts is `FETCH_ALLOWED_HOSTS` in its ConfigMap.
+
+Names are lowercase DNS-1123 labels, because they become object names:
+`team-a`, not `teamA`. The instance named `default` keeps the unsuffixed object
+names (`<release>-searxng-mcp-relay`), so a single-relay release does not have
+to replace its Deployment — whose selector is immutable — when it grows a
+second instance.
+
 ### Relay options worth knowing
 
 | Value | What it does |
 | --- | --- |
-| `mcpRelay.fenceKey.existingSecret` | Ed25519 key the relay signs `<sec:fence>` elements with, mounted as a file. Without one each process generates its own at startup, so the fingerprint changes on every restart and differs between replicas — fine until something verifies those signatures and needs a key to pin. |
-| `mcpRelay.healthToken.existingSecret` | Bearer token gating `GET /health`, separate from the MCP tokens. Setting it switches the readiness probe to the relay's own `--healthcheck` self-probe, which reads the token from its environment — a Kubernetes `httpGet` probe can only carry a literal header. |
-| `mcpRelay.fetch.proxy` / `.proxyAll` | Egress proxy for the fetch tool. `proxyAll` routes every fetch through it and hands the per-IP SSRF policy to the proxy. A proxy on a private address needs a rule under `mcpRelay.networkPolicy.egress.extra` — the relay's internet egress rule excludes private ranges. |
-| `mcpRelay.metrics.mcpIdentity` | Keeps the scrape credential in the MCP token file as identity `prometheus`. Relay images up to v1.3.0 gate `/metrics` on that table; newer ones gate it on `MCP_METRICS_TOKEN` alone, which the chart also sets. Turn it off once yours does, and the scraper loses tool access. |
-| `mcpRelay.terminationGracePeriodSeconds` | Defaults to 45. The relay drains for up to 30s and exits non-zero if the window closes with requests in flight, so the Kubernetes default of 30 would cut every rollout's drain short. |
-| `mcpRelay.config` | Any other upstream env var verbatim — cache sizes, body limits, `EXTRACT_LINKS`, `PRUNE_SELECTOR`, `USER_AGENT`. See the relay README's config table. |
+| `instances[].fenceKey.existingSecret` | Ed25519 key the relay signs `<sec:fence>` elements with, mounted as a file. Without one each process generates its own at startup, so the fingerprint changes on every restart and differs between replicas — fine until something verifies those signatures and needs a key to pin. |
+| `instances[].healthToken.existingSecret` | Bearer token gating `GET /health`, separate from the MCP tokens. Setting it switches the readiness probe to the relay's own `--healthcheck` self-probe, which reads the token from its environment — a Kubernetes `httpGet` probe can only carry a literal header. |
+| `FETCH_PROXY` / `FETCH_PROXY_ALL` (ConfigMap) | Egress proxy for the fetch tool. `FETCH_PROXY_ALL` routes every fetch through it and hands the per-IP SSRF policy to the proxy. A proxy on a private address needs a rule under that instance's `networkPolicy.egress.extra` — the relay's internet egress rule excludes private ranges. |
+| `instances[].metrics.mcpIdentity` | Keeps the scrape credential in the MCP token file as identity `prometheus`. Relay images up to v1.3.0 gate `/metrics` on that table; newer ones gate it on `MCP_METRICS_TOKEN` alone, which the chart also sets. Turn it off once yours does, and the scraper loses tool access. |
+| `instances[].terminationGracePeriodSeconds` | Defaults to 45. The relay drains for up to 30s and exits non-zero if the window closes with requests in flight, so the Kubernetes default of 30 would cut every rollout's drain short. |
+| `mcpRelay.config` / `instances[].existingConfigMap` | Every other upstream env var — cache sizes, body limits, rate limits, log level, session mode, `EXTRACT_LINKS`, `PRUNE_SELECTOR`, `USER_AGENT`. See the relay README's config table. |
 
 Pull a token out for a client:
 
@@ -549,7 +637,7 @@ kubectl -n <ns> get secret <release>-searxng-mcp-relay \
 
 Tokens already in the cluster are reused on upgrade, so bumping the chart does
 not invalidate configured clients. Same GitOps caveat as `secret_key` — use
-`mcpRelay.auth.existingSecret` under Argo CD or Flux.
+`auth.existingSecret` on each instance under Argo CD or Flux.
 
 ### Scoping a relay to specific engines
 
@@ -586,9 +674,11 @@ kubectl -n <ns> create secret generic relay-engine-tokens \
 
 ```yaml
 mcpRelay:
-  searxngTokens:
-    existingSecret: relay-engine-tokens
-    existingSecretKey: searxng-tokens
+  instances:
+    - name: team-a
+      searxngTokens:
+        existingSecret: relay-engine-tokens
+        existingSecretKey: searxng-tokens
 ```
 
 It is injected as `SEARXNG_TOKENS`, from an object separate from the agent
@@ -605,13 +695,14 @@ Four things worth knowing:
   engine reference list — categories, the `engines` parameter and `!bang`
   syntax inside the query alike — and only then drops engines whose `tokens:`
   are unsatisfied. A relay-side filter would miss the bang path.
-- **Tokens are per-relay, not per-identity.** Every identity in
-  `mcpRelay.auth.identities` shares them; those identities are audit labels.
-  Two groups of callers that must be separated need two relay deployments,
-  which today means two releases with `searxng.enabled` handled accordingly.
+- **Tokens are per-instance, not per-identity.** Every identity in one
+  instance's `auth.identities` shares that instance's tokens; those identities
+  are audit labels and rate-limit buckets. Two groups of callers that must be
+  separated are two entries in `mcpRelay.instances` — same release, same
+  SearXNG, different Deployments.
 - **Search only.** `searxng_read_url` does not use these tokens. Keeping a
-  relay away from another team's internal hosts is `mcpRelay.fetch.allowedHosts`
-  / `allowedCIDRs`, set per relay.
+  relay away from another team's internal hosts is `FETCH_ALLOWED_HOSTS` in
+  that instance's ConfigMap.
 
 Note that `tokens` as a *request parameter* is undocumented upstream — SearXNG
 documents engine tokens only as a Preferences-page setting. It follows from
@@ -622,7 +713,8 @@ no results.
 
 ### Ingress annotations
 
-Both ingress blocks (`ingress.annotations` and `mcpRelay.ingress.annotations`)
+Both ingress blocks (`ingress.annotations` and an instance's
+`ingress.annotations`)
 pass through verbatim, so cert-manager, controller-specific and any other
 annotations work as normal:
 
@@ -658,44 +750,59 @@ cross the network in clear.
 
 ```yaml
 mcpRelay:
-  ingress:
-    enabled: true
-    className: ""
-    hosts:
-      - host: mcp.example.com
-        paths:
-          - path: /
-            pathType: Prefix
-    tls:
-      - secretName: mcp-tls
-        hosts: [mcp.example.com]
+  instances:
+    - name: default
+      ingress:
+        enabled: true
+        className: ""
+        hosts:
+          - host: mcp.example.com
+            paths:
+              - path: /
+                pathType: Prefix
+        tls:
+          - secretName: mcp-tls
+            hosts: [mcp.example.com]
 ```
 
 ### Replicas and sessions
 
 Sessions live in each pod's memory. With `replicaCount > 1` a client's session
-ID is only valid on the pod that issued it, so either stay at 1 replica, set
-`mcpRelay.stateless: true` (trading server-validated session IDs for
-restart-survivability), or add session affinity at the ingress. The chart warns
-if you scale out without doing one of those.
+ID is only valid on the pod that issued it, so either stay at 1 replica, put
+`MCP_STATELESS=true` in that instance's ConfigMap (trading server-validated
+session IDs for restart-survivability), or add session affinity at the ingress.
+
+The chart notes the risk when an instance has more than one replica, but it
+cannot check whether you did anything about it: `MCP_STATELESS` lives in a
+ConfigMap it does not read.
 
 ### Reaching internal URLs
 
-`searxng_read_url` refuses non-public IPs by default. To let it read an internal
-wiki:
+`searxng_read_url` refuses non-public IPs by default. To let one instance read
+an internal wiki, in its ConfigMap:
+
+```console
+kubectl -n <ns> create configmap relay-config \
+  --from-literal=FETCH_ALLOWED_HOSTS=wiki.internal:443 \
+  --from-literal=FETCH_ALLOWED_CIDRS=10.0.0.0/8:443
+```
+
+and, in values, the NetworkPolicy hole to match — the relay's internet egress
+rule excludes private ranges, so the ACL alone would still be blocked at the
+network layer:
 
 ```yaml
 mcpRelay:
-  fetch:
-    allowedHosts: [wiki.internal]
-    allowedCIDRs: ["10.0.0.0/8"]
-  networkPolicy:
-    egress:
-      extra:
-        - to:
-            - ipBlock: { cidr: 10.0.0.0/8 }
-          ports:
-            - { port: 443, protocol: TCP }
+  instances:
+    - name: default
+      existingConfigMap: relay-config
+      networkPolicy:
+        egress:
+          extra:
+            - to:
+                - ipBlock: { cidr: 10.0.0.0/8 }
+              ports:
+                - { port: 443, protocol: TCP }
 ```
 
 Both layers have to agree — the relay's own SSRF guard *and* the NetworkPolicy.
@@ -713,7 +820,9 @@ searxng:
     # in your settings.yml.
     existingSecret: searxng-metrics
 mcpRelay:
-  metrics: { enabled: true }
+  instances:
+    - name: default
+      metrics: { enabled: true }
 valkey:
   metrics: { enabled: true }
 metrics:
@@ -780,10 +889,10 @@ kubectl -n <ns> create secret generic searxng-metrics \
 # ...and general.open_metrics: "$pw" in your settings.yml.
 ```
 
-**The relay scrape uses its own identity, in its own Secret.** Enabling
-`mcpRelay.metrics.enabled` appends a `prometheus` identity to the relay's token
-file and writes the same token, bare, into a separate
-`<release>-searxng-mcp-relay-scrape` Secret. Two objects rather than one so
+**The relay scrape uses its own identity, in its own Secret, per instance.**
+Enabling an instance's `metrics.enabled` appends a `prometheus` identity to
+*that instance's* token file and writes the same token, bare, into a separate
+`<release>-searxng-mcp-relay[-<instance>]-scrape` Secret. Two objects rather than one so
 Prometheus's read access can be scoped to the scrape credential alone:
 
 ```yaml

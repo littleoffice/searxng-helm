@@ -65,52 +65,56 @@ PY
 [ $fail -eq 0 ] && pass "basicAuth points at the operator's Secret; the chart renders none of its own"
 
 # ---------------------------------------------------------------------------
-# 2. MCP relay scrape token.
+# 2. MCP relay scrape token, per instance.
 #
-# One generated value has to reach three places that all have to agree:
+# One generated value per relay has to reach three places that all have to
+# agree: `scrape-token` on that instance's scrape Secret, the `prometheus:` row
+# in that instance's token file, and $MCP_METRICS_TOKEN on that instance's
+# container. Two independent `include`s of searxng.relay.scrapeToken used to
+# mint two different values.
 #
-#   * `scrape-token` on the relay's scrape Secret, which the ServiceMonitor
-#     presents;
-#   * the `prometheus:` line in the token file, which is what relay images up
-#     to v1.3.0 authenticate /metrics against (metrics.mcpIdentity);
-#   * $MCP_METRICS_TOKEN on the relay container, which is what newer images
-#     authenticate /metrics against instead.
-#
-# Two independent `include`s of searxng.relay.scrapeToken used to mint two
-# different values. Any disagreement here is a silent 401 on every scrape.
+# With more than one instance there is a second way to get this wrong: the
+# helpers memoise, and a memo key that is not per instance hands every relay
+# the first one's tokens. So this renders two instances and also asserts that
+# they share nothing.
 # ---------------------------------------------------------------------------
-echo "relay: scrape-token == the prometheus line == MCP_METRICS_TOKEN"
+echo "relay: scrape-token == the prometheus row == MCP_METRICS_TOKEN, per instance"
 helm template t "$CHART" \
   --set searxng.existingSettingsSecret=my-settings \
   --set mcpRelay.enabled=true \
-  --set mcpRelay.metrics.enabled=true \
+  --set mcpRelay.instances[0].name=default \
+  --set mcpRelay.instances[0].metrics.enabled=true \
+  --set mcpRelay.instances[1].name=agents \
+  --set mcpRelay.instances[1].metrics.enabled=true \
   --set valkey.enabled=false \
   > /tmp/cc-relay.yaml
 
-python3 - <<'PY' /tmp/cc-relay.yaml || bad "relay scrape token disagrees between its Secret, the token file and MCP_METRICS_TOKEN"
+python3 - <<'PY' /tmp/cc-relay.yaml || bad "a relay instance's scrape token disagrees across its three places"
 import sys, yaml
 docs = [d for d in yaml.safe_load_all(open(sys.argv[1])) if d]
 secs = {d["metadata"]["name"]: d for d in docs if d.get("kind") == "Secret"}
-scrape = next(v for k, v in secs.items() if k.endswith("-mcp-relay-scrape"))
-tokens = next(v for k, v in secs.items() if k.endswith("-mcp-relay"))
-token_value = scrape["stringData"]["scrape-token"]
-line = next(l for l in tokens["stringData"]["tokens"].splitlines()
-            if l.startswith("prometheus:"))
-in_file = line.split(":", 1)[1]
-assert token_value, "scrape-token is empty"
-assert token_value == in_file, f"{token_value!r} != {in_file!r}"
+deps = {d["metadata"]["name"]: d for d in docs if d.get("kind") == "Deployment"}
 
-# The env var must reference that same Secret and key rather than carrying a
-# second copy of the value -- a literal here would be a credential in the
-# manifest as well as a second thing to keep in step.
-dep = next(d for d in docs if d.get("kind") == "Deployment"
-           and d["metadata"]["name"].endswith("-mcp-relay"))
-env = {e["name"]: e for e in dep["spec"]["template"]["spec"]["containers"][0]["env"]}
-ref = env["MCP_METRICS_TOKEN"]["valueFrom"]["secretKeyRef"]
-assert ref["name"] == scrape["metadata"]["name"], ref
-assert scrape["stringData"][ref["key"]] == token_value, ref
+tokens_seen = []
+for suffix in ("", "-agents"):
+    base = f"t-searxng-mcp-relay{suffix}"
+    scrape = secs[base + "-scrape"]["stringData"]["scrape-token"]
+    row = next(l for l in secs[base]["stringData"]["tokens"].splitlines()
+               if l.startswith("prometheus:")).split(":", 1)[1]
+    env = {e["name"]: e for e in deps[base]["spec"]["template"]["spec"]["containers"][0]["env"]}
+    ref = env["MCP_METRICS_TOKEN"]["valueFrom"]["secretKeyRef"]
+    assert scrape, f"{base}: scrape-token is empty"
+    assert scrape == row, f"{base}: {scrape!r} != {row!r}"
+    assert ref["name"] == base + "-scrape", (base, ref)
+    assert secs[ref["name"]]["stringData"][ref["key"]] == scrape, (base, ref)
+    tokens_seen.append({l.split(":", 1)[1]
+                        for l in secs[base]["stringData"]["tokens"].splitlines()
+                        if l and not l.startswith("#")})
+
+shared = tokens_seen[0] & tokens_seen[1]
+assert not shared, f"two instances share {len(shared)} token(s) — the memo is not per instance"
 PY
-[ $fail -eq 0 ] && pass "scrape token matches in all three places"
+[ $fail -eq 0 ] && pass "each instance's scrape token matches in all three places, and instances share none"
 
 # ---------------------------------------------------------------------------
 # 3. The Deployment rolls when a config file the chart *does* render changes,
@@ -143,8 +147,9 @@ echo "guard: metrics.existingSecret without auth.existingSecret is rejected"
 if helm template t "$CHART" \
      --set searxng.existingSettingsSecret=my-settings \
      --set mcpRelay.enabled=true \
-     --set mcpRelay.metrics.enabled=true \
-     --set mcpRelay.metrics.existingSecret=my-scrape \
+     --set mcpRelay.instances[0].name=default \
+     --set mcpRelay.instances[0].metrics.enabled=true \
+     --set mcpRelay.instances[0].metrics.existingSecret=my-scrape \
      --set valkey.enabled=false >/dev/null 2>&1; then
   bad "rendered successfully; the guard did not fire"
 else
@@ -157,14 +162,19 @@ for setting in \
   searxng.metrics.password=deadbeef \
   valkey.auth.password=deadbeef \
   valkey.external.url=valkey://:pw@host:6379/0 \
-  'mcpRelay.auth.identities[0].token=deadbeefdeadbeefdeadbeefdeadbeef' \
-  'mcpRelay.searxngTokens.tokens[0]=deadbeef' \
-  mcpRelay.fenceKey.key=deadbeef \
-  mcpRelay.healthToken.token=deadbeefdeadbeefdeadbeefdeadbeef
+  'mcpRelay.instances[0].auth.identities[0].token=deadbeefdeadbeefdeadbeefdeadbeef' \
+  'mcpRelay.instances[0].searxngTokens.tokens[0]=deadbeef' \
+  'mcpRelay.instances[0].fenceKey.key=deadbeef' \
+  'mcpRelay.instances[0].healthToken.token=deadbeefdeadbeefdeadbeefdeadbeef' \
+  'mcpRelay.config.MCP_AUTH_TOKEN=deadbeefdeadbeefdeadbeefdeadbeef' \
+  'mcpRelay.config.MCP_METRICS_TOKEN=deadbeefdeadbeefdeadbeefdeadbeef' \
+  'mcpRelay.config.SEARXNG_TOKENS=deadbeef' \
+  'mcpRelay.config.FENCE_SIGNING_KEY=deadbeef' 
 do
   if helm template t "$CHART" \
        --set searxng.existingSettingsSecret=my-settings \
        --set mcpRelay.enabled=true \
+       --set mcpRelay.instances[0].name=default \
        --set "$setting" >/dev/null 2>&1; then
     bad "the schema accepted ${setting%%=*}, which would put a credential in values"
   fi

@@ -499,6 +499,69 @@ jobs:
           print('mounted from the named Secret, under the named key')
           PY
 
+      # Two relays from one release. The failure this catches is not a render
+      # error: overlapping selectors mean one Deployment's ReplicaSet adopts
+      # the other's pods, and a shared memo key means both instances get the
+      # same bearer tokens — a tenant boundary that silently is not one.
+      - name: Relay instances are separate deployments
+        run: |
+          set -euo pipefail
+          helm template t . \
+            --set searxng.existingSettingsSecret=my-settings \
+            --set mcpRelay.enabled=true \
+            --set-string mcpRelay.config.MAX_PDF_BYTES=1 \
+            --set mcpRelay.instances[0].name=default \
+            --set mcpRelay.instances[0].existingConfigMap=cfg-default \
+            --set mcpRelay.instances[1].name=agents \
+            --set mcpRelay.instances[1].existingConfigMap=cfg-agents \
+            --set mcpRelay.instances[1].searxngTokens.existingSecret=agents-engines \
+            > /tmp/instances.yaml
+          python3 - <<'PY'
+          import yaml
+
+          docs = [d for d in yaml.safe_load_all(open('/tmp/instances.yaml')) if d]
+          def by(kind):
+              return {d['metadata']['name']: d for d in docs if d.get('kind') == kind}
+
+          deps, svcs, secs = by('Deployment'), by('Service'), by('Secret')
+          a, b = 't-searxng-mcp-relay', 't-searxng-mcp-relay-agents'
+
+          # The `default` instance keeps the unsuffixed names a single-relay
+          # release has always had; its Deployment selector is immutable, so a
+          # rename here would break every existing upgrade.
+          for name in (a, b):
+              assert name in deps and name in svcs and name in secs, name
+
+          def sel(d):
+              return d['spec']['selector']['matchLabels']
+          def pod_labels(d):
+              return d['spec']['template']['metadata']['labels']
+          def matches(selector, labels):
+              return all(labels.get(k) == v for k, v in selector.items())
+
+          assert not matches(sel(deps[a]), pod_labels(deps[b])), 'default selector adopts agents pods'
+          assert not matches(sel(deps[b]), pod_labels(deps[a])), 'agents selector adopts default pods'
+          assert not matches(svcs[a]['spec']['selector'], pod_labels(deps[b])), 'default Service selects agents pods'
+
+          # envFrom order is the whole precedence contract: shared config
+          # first, the instance's own second so it wins.
+          for name, own in ((a, 'cfg-default'), (b, 'cfg-agents')):
+              c = deps[name]['spec']['template']['spec']['containers'][0]
+              got = [list(e.values())[0]['name'] for e in c['envFrom']]
+              assert got == ['t-searxng-mcp-relay-config', own], (name, got)
+
+          # Tokens are per instance, or the boundary is decorative.
+          def tokens(name):
+              return {l.split(':', 1)[1] for l in secs[name]['stringData']['tokens'].splitlines()
+                      if l and not l.startswith('#')}
+          assert not (tokens(a) & tokens(b)), 'both instances were given the same tokens'
+
+          # Only the instance that asked for them gets engine tokens.
+          env = lambda n: {e['name'] for e in deps[n]['spec']['template']['spec']['containers'][0]['env']}
+          assert 'SEARXNG_TOKENS' in env(b) and 'SEARXNG_TOKENS' not in env(a)
+          print('two instances: distinct objects, disjoint selectors, no shared tokens')
+          PY
+
       - name: No credentials in argv
         run: |
           set -euo pipefail
@@ -507,7 +570,8 @@ jobs:
             --set searxng.metrics.enabled=true \
             --set searxng.metrics.existingSecret=my-metrics \
             --set mcpRelay.enabled=true \
-            --set mcpRelay.metrics.enabled=true > /tmp/all.yaml
+            --set mcpRelay.instances[0].name=default \
+            --set mcpRelay.instances[0].metrics.enabled=true > /tmp/all.yaml
           python3 - <<'PY'
           import sys, yaml
 

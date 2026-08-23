@@ -100,33 +100,55 @@ mcpRelay:
   enabled: true
   image:
     tag: "v1.0.0"           # pin a real upstream release
-  replicaCount: 1           # sessions are in-memory; see README before scaling
-  stateless: false
-  auth:
-    existingSecret: searxng-searxng-mcp-relay
-    existingSecretKey: tokens
-  metrics:
-    enabled: true
-    existingSecret: searxng-searxng-mcp-relay-scrape
-  rateLimit:
-    rps: 5
-    exempt: []
-  fetch:
-    allowedHosts: []        # keep the SSRF guard closed unless you need it
-    allowedCIDRs: []
-  ingress:
-    enabled: true
-    className: nginx
-    annotations:
-      cert-manager.io/cluster-issuer: letsencrypt-prod
-    hosts:
-      - host: mcp.example.com
-        paths:
-          - path: /
-            pathType: Prefix
-    tls:
-      - secretName: mcp-tls
-        hosts: [mcp.example.com]
+
+  # Everything non-secret about the relays lives in ConfigMaps you manage. This
+  # one is shared by every instance; give an instance its own
+  # `existingConfigMap` to override any of it.
+  #
+  #   kubectl -n search create configmap relay-config \
+  #     --from-literal=MCP_RATE_LIMIT_RPS=5 \
+  #     --from-literal=LOG_LEVEL=info
+  config:
+    MAX_PDF_BYTES: "50000000"
+
+  defaults:
+    replicaCount: 1         # sessions are in-memory; see README before scaling
+    podDisruptionBudget:
+      enabled: false
+
+  instances:
+    - name: default
+      existingConfigMap: relay-config
+      auth:
+        existingSecret: searxng-searxng-mcp-relay
+        existingSecretKey: tokens
+      metrics:
+        enabled: true
+        existingSecret: searxng-searxng-mcp-relay-scrape
+      ingress:
+        enabled: true
+        className: nginx
+        annotations:
+          cert-manager.io/cluster-issuer: letsencrypt-prod
+        hosts:
+          - host: mcp.example.com
+            paths:
+              - path: /
+                pathType: Prefix
+        tls:
+          - secretName: mcp-tls
+            hosts: [mcp.example.com]
+
+    # A second team, reaching only its own private engines. Its Secrets and
+    # ConfigMap are yours to create; nothing about it is in this file.
+    # - name: team-a
+    #   existingConfigMap: relay-team-a-config
+    #   searxngTokens:
+    #     existingSecret: relay-team-a-engines
+    #   auth:
+    #     identities:
+    #       - name: claude-desktop
+    #       - name: ci-agent
 
 # -----------------------------------------------------------------------------
 ingress:

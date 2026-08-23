@@ -1,50 +1,55 @@
 {{- if .Values.mcpRelay.enabled }}
 {{- include "searxng.assertHardenedAll" . -}}
 {{- include "searxng.relay.validate" . -}}
-{{- $r := .Values.mcpRelay }}
+{{- $relay := .Values.mcpRelay }}
+{{- range $i, $r := (include "searxng.relay.instanceList" $ | fromYamlArray) }}
+{{- $inst := dict "ctx" $ "relay" $r }}
+{{- if $i }}
+---
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ include "searxng.relay.fullname" . }}
-  namespace: {{ .Release.Namespace }}
+  name: {{ include "searxng.relay.fullname" $inst }}
+  namespace: {{ $.Release.Namespace }}
   labels:
-    {{- include "searxng.relay.labels" . | nindent 4 }}
-  {{- with .Values.commonAnnotations }}
+    {{- include "searxng.relay.labels" $inst | nindent 4 }}
+  {{- with $.Values.commonAnnotations }}
   annotations:
     {{- toYaml . | nindent 4 }}
   {{- end }}
 spec:
   replicas: {{ $r.replicaCount }}
-  revisionHistoryLimit: {{ .Values.revisionHistoryLimit }}
+  revisionHistoryLimit: {{ $.Values.revisionHistoryLimit }}
   selector:
     matchLabels:
-      {{- include "searxng.relay.selectorLabels" . | nindent 6 }}
+      {{- include "searxng.relay.selectorLabels" $inst | nindent 6 }}
   template:
     metadata:
       annotations:
         # The token file is mounted with subPath semantics via a Secret volume;
         # roll the pods when the token set changes.
-        checksum/auth: {{ include "searxng.relay.tokenFile" . | sha256sum }}
+        checksum/auth: {{ include "searxng.relay.tokenFile" $inst | sha256sum }}
 {{/*
 There is deliberately no checksum for the engine tokens: they come from a
 Secret the chart does not render and cannot read, so it has nothing to hash.
 SEARXNG_TOKENS is read once at startup, so `kubectl rollout restart` after
 editing that Secret — the same caveat as settings.yml.
 */}}
-        {{- with .Values.commonAnnotations }}
+        {{- with $.Values.commonAnnotations }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
       labels:
-        {{- include "searxng.relay.labels" . | nindent 8 }}
+        {{- include "searxng.relay.labels" $inst | nindent 8 }}
     spec:
-      {{- with .Values.imagePullSecrets }}
+      {{- with $.Values.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      serviceAccountName: {{ include "searxng.relay.serviceAccountName" . }}
+      serviceAccountName: {{ include "searxng.relay.serviceAccountName" $inst }}
       automountServiceAccountToken: {{ $r.serviceAccount.automountServiceAccountToken }}
       enableServiceLinks: false
-      {{- if .Values.userNamespaces.enabled }}
+      {{- if $.Values.userNamespaces.enabled }}
       hostUsers: false
       {{- end }}
       # The relay drains for up to 30s on SIGTERM and exits non-zero if the
@@ -55,78 +60,65 @@ editing that Secret — the same caveat as settings.yml.
       priorityClassName: {{ . | quote }}
       {{- end }}
       securityContext:
-        {{- toYaml $r.podSecurityContext | nindent 8 }}
+        {{- toYaml $relay.podSecurityContext | nindent 8 }}
       containers:
         - name: mcp-relay
-          image: {{ include "searxng.relay.image" . | quote }}
-          imagePullPolicy: {{ $r.image.pullPolicy }}
+          image: {{ include "searxng.relay.image" $ | quote }}
+          imagePullPolicy: {{ $relay.image.pullPolicy }}
           securityContext:
-            {{- toYaml $r.containerSecurityContext | nindent 12 }}
+            {{- toYaml $relay.containerSecurityContext | nindent 12 }}
+          {{/*
+          Configuration arrives in three layers, and Kubernetes decides the
+          winner: later envFrom entries beat earlier ones, and explicit env
+          beats every envFrom.
+
+            1. mcpRelay.config      chart-rendered, shared by all instances
+            2. existingConfigMap    this instance's, overriding the shared one
+            3. env below            chart-owned, from objects rendered here
+
+          The third layer is not configuration so much as wiring: the port has
+          to match the Service, the URL has to match the SearXNG in this
+          release, and the file paths have to match the volumes mounted below.
+          A ConfigMap naming any of them is overridden rather than obeyed.
+          */}}
+          {{- if or $relay.config $r.existingConfigMap }}
+          envFrom:
+            {{- if $relay.config }}
+            - configMapRef:
+                name: {{ include "searxng.relay.globalConfigName" $ }}
+            {{- end }}
+            {{- with $r.existingConfigMap }}
+            - configMapRef:
+                name: {{ . }}
+            {{- end }}
+          {{- end }}
           env:
             - name: MCP_PORT
               value: {{ $r.service.port | quote }}
             - name: SEARXNG_URL
-              value: {{ include "searxng.relay.searxngUrl" . | quote }}
+              value: {{ include "searxng.relay.searxngUrl" $inst | quote }}
             - name: MCP_AUTH_TOKEN_FILE
-              value: /etc/mcp-auth/{{ include "searxng.relay.secretKey" . }}
-            {{- if include "searxng.relay.engineTokensEnabled" . }}
+              value: /etc/mcp-auth/{{ include "searxng.relay.secretKey" $inst }}
+            {{- if include "searxng.relay.engineTokensEnabled" $inst }}
             - name: SEARXNG_TOKENS
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "searxng.relay.engineTokensSecretName" . }}
-                  key: {{ include "searxng.relay.engineTokensSecretKey" . }}
+                  name: {{ include "searxng.relay.engineTokensSecretName" $inst }}
+                  key: {{ include "searxng.relay.engineTokensSecretKey" $inst }}
             {{- end }}
-            - name: MCP_STATELESS
-              value: {{ $r.stateless | quote }}
-            - name: LOG_LEVEL
-              value: {{ $r.logLevel | quote }}
-            - name: LOG_FORMAT
-              value: {{ $r.logFormat | quote }}
-            - name: MCP_SESSION_MAX_AGE
-              value: {{ $r.session.maxAge | quote }}
-            - name: MCP_SESSION_JANITOR_INTERVAL
-              value: {{ $r.session.janitorInterval | quote }}
-            - name: MCP_RATE_LIMIT_RPS
-              value: {{ $r.rateLimit.rps | quote }}
-            {{- with $r.rateLimit.burst }}
-            - name: MCP_RATE_LIMIT_BURST
-              value: {{ . | quote }}
-            {{- end }}
-            {{- with $r.rateLimit.exempt }}
-            - name: MCP_RATE_LIMIT_EXEMPT
-              value: {{ join "," . | quote }}
-            {{- end }}
-            {{- with $r.fetch.allowedHosts }}
-            - name: FETCH_ALLOWED_HOSTS
-              value: {{ join "," . | quote }}
-            {{- end }}
-            {{- with $r.fetch.allowedCIDRs }}
-            - name: FETCH_ALLOWED_CIDRS
-              value: {{ join "," . | quote }}
-            {{- end }}
-            {{- with $r.fetch.proxy }}
-            # Deliberately not HTTP_PROXY/HTTPS_PROXY: the relay reads this one
-            # only, so an ambient proxy variable cannot redirect fetches.
-            - name: FETCH_PROXY
-              value: {{ . | quote }}
-            {{- if $r.fetch.proxyAll }}
-            - name: FETCH_PROXY_ALL
-              value: "true"
-            {{- end }}
-            {{- end }}
-            {{- if include "searxng.relay.fenceKeyEnabled" . }}
+            {{- if include "searxng.relay.fenceKeyEnabled" $inst }}
             # Persistent fence signing key, as a file. Never as an env var: the
             # value is a private key, and the file form is what survives
             # `kubectl describe` and a rendered manifest without it.
             - name: FENCE_SIGNING_KEY_FILE
-              value: {{ include "searxng.relay.fenceKeyPath" . | quote }}
+              value: {{ include "searxng.relay.fenceKeyPath" $inst | quote }}
             {{- end }}
-            {{- if include "searxng.relay.healthTokenEnabled" . }}
+            {{- if include "searxng.relay.healthTokenEnabled" $inst }}
             - name: MCP_HEALTH_TOKEN
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "searxng.relay.healthTokenSecretName" . }}
-                  key: {{ include "searxng.relay.healthTokenSecretKey" . }}
+                  name: {{ include "searxng.relay.healthTokenSecretName" $inst }}
+                  key: {{ include "searxng.relay.healthTokenSecretKey" $inst }}
             {{- end }}
             {{- if $r.metrics.enabled }}
             # /metrics has its own credential on relay images that gate it
@@ -135,12 +127,8 @@ editing that Secret — the same caveat as settings.yml.
             - name: MCP_METRICS_TOKEN
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "searxng.relay.scrapeSecretName" . }}
-                  key: {{ include "searxng.relay.scrapeSecretKey" . }}
-            {{- end }}
-            {{- range $k, $v := $r.config }}
-            - name: {{ $k }}
-              value: {{ $v | quote }}
+                  name: {{ include "searxng.relay.scrapeSecretName" $inst }}
+                  key: {{ include "searxng.relay.scrapeSecretKey" $inst }}
             {{- end }}
             {{- with $r.extraEnv }}
             {{- toYaml . | nindent 12 }}
@@ -159,7 +147,7 @@ editing that Secret — the same caveat as settings.yml.
             timeoutSeconds: 5
             failureThreshold: 3
           readinessProbe:
-            {{- if include "searxng.relay.healthTokenEnabled" . }}
+            {{- if include "searxng.relay.healthTokenEnabled" $inst }}
             # /health is gated by a bearer token. A Kubernetes httpGet probe
             # can only carry a literal header, which would put the token in
             # this manifest in plain text — so the probe is the relay's own
@@ -182,7 +170,7 @@ editing that Secret — the same caveat as settings.yml.
             - name: auth
               mountPath: /etc/mcp-auth
               readOnly: true
-            {{- if include "searxng.relay.fenceKeyEnabled" . }}
+            {{- if include "searxng.relay.fenceKeyEnabled" $inst }}
             - name: fence-key
               mountPath: /etc/mcp-fence
               readOnly: true
@@ -193,16 +181,16 @@ editing that Secret — the same caveat as settings.yml.
       volumes:
         - name: auth
           secret:
-            secretName: {{ include "searxng.relay.secretName" . }}
+            secretName: {{ include "searxng.relay.secretName" $inst }}
             defaultMode: 0400
-        {{- if include "searxng.relay.fenceKeyEnabled" . }}
+        {{- if include "searxng.relay.fenceKeyEnabled" $inst }}
         - name: fence-key
           secret:
-            secretName: {{ include "searxng.relay.fenceKeySecretName" . }}
+            secretName: {{ include "searxng.relay.fenceKeySecretName" $inst }}
             defaultMode: 0400
             items:
-              - key: {{ include "searxng.relay.fenceKeySecretKey" . }}
-                path: {{ include "searxng.relay.fenceKeySecretKey" . }}
+              - key: {{ include "searxng.relay.fenceKeySecretKey" $inst }}
+                path: {{ include "searxng.relay.fenceKeySecretKey" $inst }}
         {{- end }}
         {{- with $r.extraVolumes }}
         {{- toYaml . | nindent 8 }}
@@ -219,4 +207,5 @@ editing that Secret — the same caveat as settings.yml.
       tolerations:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+{{- end }}
 {{- end }}

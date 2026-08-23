@@ -1,23 +1,29 @@
 {{- if .Values.mcpRelay.enabled }}
+{{- range $i, $r := (include "searxng.relay.instanceList" $ | fromYamlArray) }}
+{{- $inst := dict "ctx" $ "relay" $r }}
+{{- if $i }}
+---
+{{- end }}
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{ include "searxng.relay.fullname" . }}
-  namespace: {{ .Release.Namespace }}
+  name: {{ include "searxng.relay.fullname" $inst }}
+  namespace: {{ $.Release.Namespace }}
   labels:
-    {{- include "searxng.relay.labels" . | nindent 4 }}
-  {{- with (merge (dict) .Values.mcpRelay.service.annotations .Values.commonAnnotations) }}
+    {{- include "searxng.relay.labels" $inst | nindent 4 }}
+  {{- with (merge (dict) $r.service.annotations $.Values.commonAnnotations) }}
   annotations:
     {{- include "searxng.renderAnnotations" . | nindent 4 }}
   {{- end }}
 spec:
-  type: {{ .Values.mcpRelay.service.type }}
+  type: {{ $r.service.type }}
   ports:
     - name: http
-      port: {{ .Values.mcpRelay.service.port }}
+      port: {{ $r.service.port }}
       targetPort: http
       protocol: TCP
       appProtocol: http
   selector:
-    {{- include "searxng.relay.selectorLabels" . | nindent 4 }}
+    {{- include "searxng.relay.selectorLabels" $inst | nindent 4 }}
+{{- end }}
 {{- end }}

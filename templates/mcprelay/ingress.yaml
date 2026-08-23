@@ -1,27 +1,33 @@
-{{- if and .Values.mcpRelay.enabled .Values.mcpRelay.ingress.enabled }}
-{{- $name := include "searxng.relay.fullname" . -}}
-{{- $svcPort := .Values.mcpRelay.service.port -}}
+{{- if .Values.mcpRelay.enabled }}
+{{- range $i, $r := (include "searxng.relay.instanceList" $ | fromYamlArray) }}
+{{- $inst := dict "ctx" $ "relay" $r }}
+{{- if $r.ingress.enabled }}
+{{- $name := include "searxng.relay.fullname" $inst }}
+{{- $svcPort := $r.service.port }}
+{{- if $i }}
+---
+{{- end }}
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: {{ $name }}
-  namespace: {{ .Release.Namespace }}
+  namespace: {{ $.Release.Namespace }}
   labels:
-    {{- include "searxng.relay.labels" . | nindent 4 }}
-  {{- with (merge (dict) .Values.mcpRelay.ingress.annotations .Values.commonAnnotations) }}
+    {{- include "searxng.relay.labels" $inst | nindent 4 }}
+  {{- with (merge (dict) $r.ingress.annotations $.Values.commonAnnotations) }}
   annotations:
     {{- include "searxng.renderAnnotations" . | nindent 4 }}
   {{- end }}
 spec:
-  {{- with .Values.mcpRelay.ingress.className }}
+  {{- with $r.ingress.className }}
   ingressClassName: {{ . | quote }}
   {{- end }}
-  {{- with .Values.mcpRelay.ingress.tls }}
+  {{- with $r.ingress.tls }}
   tls:
     {{- toYaml . | nindent 4 }}
   {{- end }}
   rules:
-    {{- range .Values.mcpRelay.ingress.hosts }}
+    {{- range $r.ingress.hosts }}
     - host: {{ .host | quote }}
       http:
         paths:
@@ -35,4 +41,6 @@ spec:
                   number: {{ $svcPort }}
           {{- end }}
     {{- end }}
+{{- end }}
+{{- end }}
 {{- end }}
