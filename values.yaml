@@ -433,7 +433,7 @@ valkey:
     registry: cgr.dev
     repository: chainguard/valkey
     tag: ""
-    digest: "sha256:1db6627a95cba5de1f12b4906c7a5e06d3711ed19c35aa0ba6e2d5fc770ee918"
+    digest: "sha256:8f0d6411632ef93a46eb4156693bec148ba25e013990e817e084494047f9c061"
     pullPolicy: IfNotPresent
 
   # Password is generated and stored in a Secret, then rendered into
@@ -598,7 +598,7 @@ tests:
     registry: cgr.dev
     repository: chainguard/curl
     tag: ""
-    digest: "sha256:2db2b6ec71c4b91fd989f5441902f4872bbc1d1d4bce8c2fb8981eccadc07060"
+    digest: "sha256:f2b8217b1c997d8034d12fd0be6b0c0cc62557a1dbbee6784837f89cdcec1952"
 
 # -----------------------------------------------------------------------------
 # MCP relay — littleoffice/mcp-searxng-relay
@@ -621,7 +621,7 @@ mcpRelay:
     repository: littleoffice/mcp-searxng-relay
     # Upstream publishes vX.Y.Z tags plus `latest`. Pin a version.
     tag: ""
-    digest: "sha256:e8b8055592741765e35ef3bd0eb943390401e47d9b6a33550404659f04c57c28"
+    digest: "sha256:acc0f6dfcad1f9b9b1743d3b6bfd5877d11a7c489a5c020b9aee148f5e206e2d"
     pullPolicy: IfNotPresent
 
   # Image is FROM scratch and runs as 1001:1001 with no writable paths.
