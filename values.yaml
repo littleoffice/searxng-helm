@@ -26,7 +26,7 @@ image:
   # Falls back to .Chart.AppVersion when empty. Pin this.
   tag: ""
   # If set, takes precedence over `tag`. e.g. "sha256:abc123..."
-  digest: "sha256:e0027a772aeeea55bf642256aae6fb3344ffa5f25ca665898c2ea821101334c4"
+  digest: "sha256:394bc18556af80cd1cd448daf5b69ead7f65d990912851a47ba1ec79c85fec44"
   pullPolicy: IfNotPresent
 
 imagePullSecrets: []
@@ -433,7 +433,7 @@ valkey:
     registry: cgr.dev
     repository: chainguard/valkey
     tag: ""
-    digest: "sha256:fc8a5001f230a71d657686d0bc8c54a6ad0a77d442a837ddfb832aa9fe5605fc"
+    digest: "sha256:09b1a40cd27b3499d86fd362e4b2774217fdafd4a9a8ecc2f8763967685b00b0"
     pullPolicy: IfNotPresent
 
   # Password is generated and stored in a Secret, then rendered into
