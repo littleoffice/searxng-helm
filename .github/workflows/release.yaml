@@ -33,7 +33,7 @@ env:
   # renovate: datasource=github-releases depName=helm/helm
   HELM_VERSION: v4.3.0
   # renovate: datasource=github-releases depName=aquasecurity/trivy
-  TRIVY_VERSION: 0.74.0
+  TRIVY_VERSION: 0.75.0
 
 jobs:
   release:
