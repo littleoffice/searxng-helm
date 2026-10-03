@@ -665,6 +665,21 @@ no values field anywhere takes secret material.
 {{- end -}}
 
 {{/*
+Whether SearXNG's own policy admits every pod in the release namespace.
+networkPolicy.ingress.allowSameNamespace: null resolves to "not mcpRelay.enabled":
+with a relay, SearXNG is the backend behind the relay's controls, and a
+same-namespace allow lets any pod search around them. Returns "true" or "".
+*/}}
+{{- define "searxng.sameNamespaceAllowed" -}}
+{{- $v := .Values.networkPolicy.ingress.allowSameNamespace -}}
+{{- if kindIs "invalid" $v -}}
+{{- if not .Values.mcpRelay.enabled }}true{{ end -}}
+{{- else if $v -}}
+true
+{{- end -}}
+{{- end -}}
+
+{{/*
 Build a NetworkPolicy `from` list out of allowSameNamespace + fromNamespaces +
 raw from entries.
 Call with (dict "ctx" . "cfg" <the .networkPolicy.ingress map>).

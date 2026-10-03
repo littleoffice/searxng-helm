@@ -24,7 +24,7 @@ Things worth checking
 {{- if .Values.networkPolicy.enabled }}
 
 [NetworkPolicy] Enabled. Ingress to :{{ include "searxng.serverPort" . }} is allowed from:
-{{- if .Values.networkPolicy.ingress.allowSameNamespace }}
+{{- if include "searxng.sameNamespaceAllowed" . }}
   - any pod in namespace {{ .Release.Namespace }}
 {{- end }}
 {{- range .Values.networkPolicy.ingress.fromNamespaces }}

@@ -3,7 +3,8 @@
 {{- $port := include "searxng.serverPort" . -}}
 {{- $np := .Values.networkPolicy }}
 {{- $r := .Values.mcpRelay }}
-{{- $from := include "searxng.netpolFrom" (dict "ctx" . "cfg" $np.ingress) }}
+{{- $sameNs := include "searxng.sameNamespaceAllowed" . }}
+{{- $from := include "searxng.netpolFrom" (dict "ctx" . "cfg" (merge (dict "allowSameNamespace" (eq $sameNs "true")) $np.ingress)) }}
 {{- $scrapeNs := .Values.metrics.allowScrapeFromNamespaces | default list }}
 {{- $scrapePeers := list }}
 {{- range $scrapeNs }}
@@ -38,7 +39,19 @@ spec:
         - port: {{ $port | int }}
           protocol: TCP
     {{- end }}
-    {{- if and $r.enabled (not $np.ingress.allowSameNamespace) }}
+    {{- if and .Values.tests.enabled (not $sameNs) }}
+    # The chart's own `helm test` pod, which checks SearXNG's /healthz.
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: {{ include "searxng.name" . }}
+              app.kubernetes.io/instance: {{ .Release.Name }}
+              app.kubernetes.io/component: test
+      ports:
+        - port: {{ $port | int }}
+          protocol: TCP
+    {{- end }}
+    {{- if and $r.enabled (not $sameNs) }}
     # The relays proxy searches through SearXNG. One selector per instance:
     # each carries its own component label, so a single selector could only
     # match one of them.

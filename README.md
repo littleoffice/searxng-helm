@@ -470,7 +470,31 @@ networkPolicy:
     allowSameNamespace: true
 ```
 
+Without the MCP relay this is already the default (`null` resolves to `true`).
+With the relay enabled it resolves to `false`, so set it explicitly, or better,
+admit only Open WebUI's pods through `networkPolicy.ingress.from`. Every pod
+this admits can search without going through the relay's auth, rate limits
+and audit log.
+
 Then point Open WebUI at `http://searxng.<namespace>.svc:8080/search?q=<query>`.
+
+## Upgrading to 2.1.0
+
+Two defaults change. Both close a way around the MCP relay; neither changes a
+values key.
+
+**`networkPolicy.ingress.allowSameNamespace` is now `null`,** which resolves to
+`true` without the relay and `false` with it. With the relay enabled, SearXNG
+then admits only the relays and the chart's own `helm test` pod, so any other
+pod in the namespace (Open WebUI, a debug shell) can no longer search without
+going through the relay. If you relied on the old default, set it back to
+`true` explicitly, or admit specific pods through `networkPolicy.ingress.from`.
+
+**`mcpRelay…metrics.mcpIdentity` is now `false`.** The scrape token no longer
+appears in the relay's token file as identity `prometheus`, so whoever holds
+the scrape Secret can read `/metrics` but can no longer call the tools. Relay
+images up to v1.3.0 gate `/metrics` on the token table and need it back on; on
+those, set `mcpIdentity: true` or every scrape returns 401.
 
 ## Upgrading to 2.0.0
 
@@ -811,6 +835,45 @@ server the way a raw `toYaml` would leave it.
 
 ### Exposing it
 
+Three things can face clients. Each needs its own control, and each backend
+should be reachable only from the hop in front of it:
+
+| Front door | For | Control | Backend reachable from |
+| --- | --- | --- | --- |
+| Relay Ingress (or the fence-gateway's) | agents | bearer token / OAuth | the ingress controller, or the gateway only |
+| SearXNG Ingress | people, web UI | single sign-on at the Ingress | the ingress controller (`fromNamespaces`) |
+| `/metrics` | Prometheus | dedicated scrape token | `metrics.allowScrapeFromNamespaces` |
+
+**With [fence-gateway](https://github.com/littleoffice/fence-gateway) in
+front,** turn the relay's Ingress off and narrow its policy to the gateway's
+pods: set `networkPolicy.ingress.allowSameNamespace: false` on the instance and
+list the gateway under `networkPolicy.ingress.from`. This is required when the
+gateway forwards client tokens (`UPSTREAM_MCP_AUTH_MODE=passthrough`): those
+tokens work at the relay too. See its
+[deployment guide](https://github.com/littleoffice/fence-gateway/blob/main/docs/deployment.md).
+
+**The SearXNG web UI** has no login of its own, and anyone who reaches it can
+search without going through the relay. When you enable `ingress`, put single
+sign-on in front of it. With ingress-nginx and
+[oauth2-proxy](https://oauth2-proxy.github.io/oauth2-proxy/) deployed
+separately:
+
+```yaml
+ingress:
+  enabled: true
+  annotations:
+    nginx.ingress.kubernetes.io/auth-url: "https://$host/oauth2/auth"
+    nginx.ingress.kubernetes.io/auth-signin: "https://$host/oauth2/start?rd=$escaped_request_uri"
+    nginx.ingress.kubernetes.io/auth-response-headers: "X-Auth-Request-User,X-Auth-Request-Email"
+networkPolicy:
+  ingress:
+    fromNamespaces: [ingress-nginx]
+```
+
+plus an Ingress for oauth2-proxy itself on the same host under `/oauth2`.
+Searches made through the web UI go straight to SearXNG, so they are not in
+the relay's audit log.
+
 The MCP endpoint is `/` on the relay Service; `/health` is unauthenticated and
 `/metrics` requires a bearer token. The relay speaks plain HTTP, so terminate
 TLS in front of it — the chart warns at install time if you enable
@@ -904,7 +967,7 @@ metrics:
 | Component | Endpoint | Format | Auth |
 | --- | --- | --- | --- |
 | SearXNG | `:8080/metrics` | OpenMetrics | HTTP Basic, password = `general.open_metrics` |
-| MCP relay | `:8080/metrics` | Prometheus text | Bearer, dedicated `prometheus` identity |
+| MCP relay | `:8080/metrics` | Prometheus text | Bearer `MCP_METRICS_TOKEN`, its own Secret |
 | Valkey | `:9121/metrics` | Prometheus text | none — reachable only via NetworkPolicy |
 
 Four things worth knowing:
@@ -958,11 +1021,12 @@ kubectl -n <ns> create secret generic searxng-metrics \
 # ...and general.open_metrics: "$pw" in your settings.yml.
 ```
 
-**The relay scrape uses its own identity, in its own Secret, per instance.**
-Enabling an instance's `metrics.enabled` appends a `prometheus` identity to
-*that instance's* token file and writes the same token, bare, into a separate
-`<release>-searxng-mcp-relay[-<instance>]-scrape` Secret. Two objects rather than one so
-Prometheus's read access can be scoped to the scrape credential alone:
+**The relay scrape uses its own credential, in its own Secret, per instance.**
+Enabling an instance's `metrics.enabled` writes a scrape token into a separate
+`<release>-searxng-mcp-relay[-<instance>]-scrape` Secret and passes it to the
+relay as `MCP_METRICS_TOKEN`. It is not an MCP credential: the relay accepts it
+on `/metrics` only, so a compromised Prometheus cannot call the tools. Its own
+object, so Prometheus's read access can be scoped to it alone:
 
 ```yaml
 rules:
@@ -972,13 +1036,11 @@ rules:
     verbs: [get]
 ```
 
-The token is still duplicated inside the token file, and that part is not
-fixable here — the relay authenticates every request, `/metrics` included,
-against one `MCP_AUTH_TOKEN_FILE`, so anything that reads that file sees every
-token. What the split removes is the need for the monitoring stack to be one of
-those things. The separate identity is what keeps a compromised Prometheus from
-being able to call the tools at all, and lets you rotate the scrape credential
-without touching your agents.
+Relay images up to v1.3.0 gate `/metrics` on the MCP token table instead. For
+those, `metrics.mcpIdentity: true` also writes the scrape token into the token
+file as identity `prometheus` — which makes it a valid MCP credential, so leave
+it off on current images. Either way the scrape credential rotates without
+touching your agents.
 
 **Valkey has no native endpoint,** so a `redis_exporter` sidecar
 (`59000:59000`, read-only rootfs) runs next to both the primary and each

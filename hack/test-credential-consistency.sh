@@ -84,8 +84,10 @@ helm template t "$CHART" \
   --set mcpRelay.enabled=true \
   --set mcpRelay.instances[0].name=default \
   --set mcpRelay.instances[0].metrics.enabled=true \
+  --set mcpRelay.instances[0].metrics.mcpIdentity=true \
   --set mcpRelay.instances[1].name=agents \
   --set mcpRelay.instances[1].metrics.enabled=true \
+  --set mcpRelay.instances[1].metrics.mcpIdentity=true \
   --set valkey.enabled=false \
   > /tmp/cc-relay.yaml
 
@@ -117,6 +119,37 @@ PY
 [ $fail -eq 0 ] && pass "each instance's scrape token matches in all three places, and instances share none"
 
 # ---------------------------------------------------------------------------
+# 2b. Defaults that keep the relay's backend behind the relay.
+#
+# With a relay enabled and nothing overridden: the scrape token is not an MCP
+# credential (no `prometheus:` row), and SearXNG's policy does not admit the
+# whole namespace (no empty podSelector peer) — only the relay and the test pod.
+# ---------------------------------------------------------------------------
+echo "relay defaults: scraper cannot call tools, SearXNG admits only the relay"
+helm template t "$CHART" \
+  --set searxng.existingSettingsSecret=my-settings \
+  --set mcpRelay.enabled=true \
+  --set mcpRelay.instances[0].name=default \
+  --set mcpRelay.instances[0].metrics.enabled=true \
+  --set valkey.enabled=false \
+  > /tmp/cc-defaults.yaml
+
+python3 - <<'PY' /tmp/cc-defaults.yaml || bad "a relay-enabled default render lets something around the relay"
+import sys, yaml
+docs = [d for d in yaml.safe_load_all(open(sys.argv[1])) if d]
+tokens = next(d for d in docs if d.get("kind") == "Secret"
+              and d["metadata"]["name"] == "t-searxng-mcp-relay")["stringData"]["tokens"]
+assert not any(l.startswith("prometheus:") for l in tokens.splitlines()), \
+    "scrape token is in the MCP token file by default"
+pol = next(d for d in docs if d.get("kind") == "NetworkPolicy"
+           and d["metadata"]["name"] == "t-searxng")
+peers = [p for rule in pol["spec"]["ingress"] for p in rule["from"]]
+assert {} not in peers and {"podSelector": {}} not in peers, \
+    f"SearXNG admits the whole namespace: {peers}"
+PY
+[ $fail -eq 0 ] && pass "no prometheus MCP identity; SearXNG admits the relay and the test pod only"
+
+# ---------------------------------------------------------------------------
 # 3. The Deployment rolls when a config file the chart *does* render changes,
 #    and carries no checksum for the one it does not. settings.yml comes from a
 #    Secret the chart cannot read, so a checksum for it could only ever hash
@@ -143,12 +176,13 @@ PY
 # 4. The guards: combinations that cannot be satisfied must fail at render
 #    time rather than produce a running pod that 401s or CrashLoops.
 # ---------------------------------------------------------------------------
-echo "guard: metrics.existingSecret without auth.existingSecret is rejected"
+echo "guard: metrics.existingSecret without auth.existingSecret is rejected under mcpIdentity"
 if helm template t "$CHART" \
      --set searxng.existingSettingsSecret=my-settings \
      --set mcpRelay.enabled=true \
      --set mcpRelay.instances[0].name=default \
      --set mcpRelay.instances[0].metrics.enabled=true \
+     --set mcpRelay.instances[0].metrics.mcpIdentity=true \
      --set mcpRelay.instances[0].metrics.existingSecret=my-scrape \
      --set valkey.enabled=false >/dev/null 2>&1; then
   bad "rendered successfully; the guard did not fire"

@@ -525,9 +525,15 @@ networkPolicy:
 
   # --- who may reach SearXNG on :8080 ---
   ingress:
-    # Allow any pod in the release namespace (Open WebUI, the MCP relay, the
-    # helm test pod, ...).
-    allowSameNamespace: true
+    # Allow any pod in the release namespace (Open WebUI, ...).
+    #
+    # null (the default) means: true unless mcpRelay is enabled. With a relay,
+    # SearXNG is the backend that sits behind the relay's auth, rate limits and
+    # audit log, and any pod admitted here can search around all three. The
+    # relays and the chart's own helm test pod are admitted by rules of their
+    # own, so they need nothing here. Set true to admit the whole namespace
+    # again (Open WebUI next to a relay), or false to require it always.
+    allowSameNamespace: null
     # Namespaces allowed to reach SearXNG, by name. This is where your ingress
     # controller goes — the chart makes no assumption about which controller
     # you run or where it lives.
@@ -795,10 +801,11 @@ mcpRelay:
       # fetched, and a scraper should not hold a credential that also calls the
       # tools.
       #
-      # The chart sets both, so one value works either way. Turn this off once
-      # your relay image gates /metrics on its own token — the scraper then
-      # cannot reach the MCP endpoint at all.
-      mcpIdentity: true
+      # Off by default: with it on, the scrape token is also a valid MCP
+      # credential, so whoever holds Prometheus's Secret can call the tools as
+      # `prometheus`. Turn it on only for a relay image that still gates
+      # /metrics on the token table (<= v1.3.0); every scrape 401s otherwise.
+      mcpIdentity: false
 
     resources:
       requests:

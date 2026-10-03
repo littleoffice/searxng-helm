@@ -75,7 +75,7 @@
             "enabled": { "type": "boolean" },
             "existingSecret": { "type": "string" },
             "existingSecretKey": { "type": "string" },
-            "mcpIdentity": { "type": "boolean", "description": "Also add the scrape credential to the MCP token file as identity `prometheus`. Required by relay images that gate /metrics on the MCP token table (<= v1.3.0); turn off once yours gates it on MCP_METRICS_TOKEN." }
+            "mcpIdentity": { "type": "boolean", "description": "Also add the scrape credential to the MCP token file as identity `prometheus`, which makes it a valid MCP credential too. Only for relay images that gate /metrics on the MCP token table (<= v1.3.0). Default false." }
           }
         },
         "resources": { "$ref": "#/definitions/resources" },
@@ -508,7 +508,7 @@
           "type": "object",
           "additionalProperties": false,
           "properties": {
-            "allowSameNamespace": { "type": "boolean" },
+            "allowSameNamespace": { "type": ["boolean", "null"], "description": "Admit every pod in the release namespace. null: true unless mcpRelay is enabled." },
             "fromNamespaces": { "type": "array", "items": { "type": "string" } },
             "from": { "type": "array", "items": { "type": "object" } },
             "extra": { "type": "array", "items": { "type": "object" } }
