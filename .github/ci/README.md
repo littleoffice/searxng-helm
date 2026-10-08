@@ -1,6 +1,7 @@
 # CI
 
-Two workflows. `ci.yaml` gates pull requests, `release.yaml` publishes.
+Three workflows. `ci.yaml` gates pull requests, `release.yaml` publishes, and
+`artifacthub.yaml` pushes the Artifact Hub repository metadata.
 
 ## Why this isn't stock chart-testing
 
@@ -145,6 +146,12 @@ installable. It publishes to:
 There is no `gh-pages` classic Helm repo: the chart is consumed over OCI
 (`helm install … oci://ghcr.io/<owner>/charts/searxng`), so `chart-releaser`
 and the Pages index it maintains were dropped.
+
+Artifact Hub does not read this repository. It reads
+`docs/metadata/artifacthub-repo.yml` (the `repositoryID` behind the Verified
+Publisher badge) from an OCI artifact tagged `artifacthub.io` in
+`ghcr.io/<owner>/charts/searxng`. `artifacthub.yaml` pushes that artifact
+whenever the file changes on `main`, or on demand via *Run workflow*.
 
 Verify a published chart:
 

@@ -42,6 +42,7 @@
         "stackrox/kube-linter",
         "yannh/kubeconform",
         "rhysd/actionlint",
+        "oras-project/oras",
         "kubernetes-sigs/kind",
         "prometheus-operator/prometheus-operator"
       ],
