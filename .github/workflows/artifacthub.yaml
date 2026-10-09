@@ -1,0 +1,93 @@
+name: Artifact Hub metadata
+
+# Artifact Hub never reads this repository. For an OCI chart repository it
+# looks for the repository metadata (repositoryID, owners) as an OCI artifact
+# tagged `artifacthub.io` next to the chart itself, and that is what grants the
+# Verified Publisher badge. Without this push, docs/metadata/artifacthub-repo.yml
+# has no effect wherever it sits in git.
+#
+# Separate from release.yaml because the metadata changes independently of the
+# chart: editing it should not need a version bump, and a release should not
+# re-push it.
+on:
+  push:
+    branches: [main]
+    paths:
+      - docs/metadata/artifacthub-repo.yml
+      - .github/workflows/artifacthub.yaml
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: artifacthub-metadata
+  cancel-in-progress: false
+
+env:
+  # renovate: datasource=github-releases depName=oras-project/oras
+  ORAS_VERSION: 1.3.4
+
+jobs:
+  push:
+    name: Push repository metadata
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      # Writing the artifacthub.io tag into ghcr.io/<owner>/charts/searxng.
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install oras
+        run: |
+          set -euo pipefail
+          base="https://github.com/oras-project/oras/releases/download/v${ORAS_VERSION}"
+          tarball="oras_${ORAS_VERSION}_linux_amd64.tar.gz"
+          cd "${RUNNER_TEMP}"
+          curl -fsSLO "${base}/${tarball}"
+          curl -fsSLO "${base}/oras_${ORAS_VERSION}_checksums.txt"
+          sha256sum --ignore-missing -c "oras_${ORAS_VERSION}_checksums.txt"
+          tar -xzf "${tarball}" -C /usr/local/bin oras
+          oras version
+
+      # Artifact Hub silently ignores metadata it cannot parse, so a typo would
+      # otherwise only show up as a badge that never appears.
+      - name: Check the metadata
+        working-directory: docs/metadata
+        run: |
+          set -euo pipefail
+          yq -e '.repositoryID | test("^[0-9a-f]{8}-([0-9a-f]{4}-){3}[0-9a-f]{12}$")' \
+            artifacthub-repo.yml
+
+      - name: Log in to GHCR
+        env:
+          REGISTRY_USER: ${{ github.actor }}
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          printf '%s' "${REGISTRY_TOKEN}" \
+            | oras login ghcr.io --username "${REGISTRY_USER}" --password-stdin
+
+      # Run from the file's own directory: oras records the path as given as
+      # the layer title, and Artifact Hub expects exactly `artifacthub-repo.yml`.
+      # Media types are the ones Artifact Hub documents for OCI repositories.
+      - name: Push to ghcr.io as artifacthub.io
+        working-directory: docs/metadata
+        env:
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+          owner="$(echo "${OWNER}" | tr '[:upper:]' '[:lower:]')"
+          ref="ghcr.io/${owner}/charts/searxng:artifacthub.io"
+          oras push "${ref}" \
+            --config /dev/null:application/vnd.cncf.artifacthub.config.v1+yaml \
+            artifacthub-repo.yml:application/vnd.cncf.artifacthub.repository-metadata.layer.v1.yaml
+          {
+            echo "### Pushed"
+            echo
+            echo "\`${ref}\` — Artifact Hub picks it up on its next scan of the repository."
+          } >> "$GITHUB_STEP_SUMMARY"
