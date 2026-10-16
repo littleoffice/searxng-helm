@@ -26,7 +26,7 @@ image:
   # Falls back to .Chart.AppVersion when empty. Pin this.
   tag: ""
   # If set, takes precedence over `tag`. e.g. "sha256:abc123..."
-  digest: "sha256:85492ba800a861e3e8ff6014c430e81369fe6ca766a9990595f616d1ce95b272"
+  digest: "sha256:b4e34a39f76b1c860bbc53a0f35b10492029b2b18ef1d868df464fe43d7e0b93"
   pullPolicy: IfNotPresent
 
 imagePullSecrets: []
@@ -407,7 +407,7 @@ valkey:
       registry: docker.io
       repository: oliver006/redis_exporter
       tag: ""
-      digest: "sha256:6ca518a72f30f7f576ef92963de1b91d3c3f5fd3aeac949f878bfda183587820"
+      digest: "sha256:0842ef7110e62b40bbde2d5c11f38c6fbd99f7100c75e3866637c1b335a1eff7"
       pullPolicy: IfNotPresent
     port: 9121
     resources:
@@ -433,7 +433,7 @@ valkey:
     registry: cgr.dev
     repository: chainguard/valkey
     tag: ""
-    digest: "sha256:10c72b92ecc00563538e18967880ad2b2009b2362d94980b1ff428cee844e3be"
+    digest: "sha256:51179376f764cc4794d20cbe4bc59f407a90f74d8a9d4f617df363f916ff6757"
     pullPolicy: IfNotPresent
 
   # Password is generated and stored in a Secret, then rendered into
@@ -598,7 +598,7 @@ tests:
     registry: cgr.dev
     repository: chainguard/curl
     tag: ""
-    digest: "sha256:f3702b165919d7df8319b9a35bb825529bd430931a75538a5acba623b8ad9aca"
+    digest: "sha256:9fe0546fdeb7d98941de198bec4c55b7ad932e09616b016039fe656cd9781f58"
 
 # -----------------------------------------------------------------------------
 # MCP relay — littleoffice/mcp-searxng-relay
