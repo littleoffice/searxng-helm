@@ -32,6 +32,10 @@ ct.yaml
 .yamllint.yaml
 renovate.json
 
+# Reference documentation. It is read on GitHub, where the packaged README
+# links to it; inside the package it would only be dead weight.
+docs/
+
 # Artifact Hub repository-ownership metadata. It belongs at the root of the
 # published Helm repo (the gh-pages branch, beside index.yaml), not inside
 # the packaged chart.

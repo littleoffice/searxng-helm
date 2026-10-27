@@ -697,8 +697,8 @@ jobs:
           ls -l rendered
 
       # Policy. The check set is pinned in .kube-linter.yaml and mirrors the
-      # README's security posture table, so a hardening regression fails here
-      # instead of shipping green.
+      # security posture table in docs/security-model.md, so a hardening
+      # regression fails here instead of shipping green.
       - name: kube-linter
         run: kube-linter lint --config .kube-linter.yaml rendered/
 
