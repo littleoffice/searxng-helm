@@ -112,7 +112,7 @@ mcpRelay:
     MAX_PDF_BYTES: "50000000"
 
   defaults:
-    replicaCount: 1         # sessions are in-memory; see README before scaling
+    replicaCount: 1         # sessions are in-memory; see docs/mcp-relay.md before scaling
     podDisruptionBudget:
       enabled: false
 

@@ -650,8 +650,9 @@ mcpRelay:
   # --- global relay tuning ---------------------------------------------------
   # Rendered into <release>-searxng-mcp-relay-config and applied to every
   # instance FIRST, so any instance's own ConfigMap overrides what it names.
-  # Everything in the relay README's config table that the chart does not set
-  # itself belongs here or in an instance ConfigMap.
+  # Every variable in the relay's configuration reference (docs/configuration.md
+  # in mcp-searxng-relay) that the chart does not set itself belongs here or in
+  # an instance ConfigMap.
   #
   # Non-secret only. Credential-shaped keys (MCP_AUTH_TOKEN, MCP_AUTH_TOKENS,
   # MCP_HEALTH_TOKEN, MCP_METRICS_TOKEN, SEARXNG_TOKENS, FENCE_SIGNING_KEY,
@@ -696,8 +697,8 @@ mcpRelay:
     # what `instances` below is for.
     #
     # Same GitOps caveat as the secret_key: under Argo CD / Flux use
-    # existingSecret, whose file you write yourself (see the relay README for
-    # the `identity:token` format). With existingSecret the chart stops
+    # existingSecret, whose file you write yourself (see "Token file format"
+    # in the relay's docs/configuration.md). With existingSecret the chart stops
     # stamping a checksum for that file — it cannot hash a Secret it does not
     # write — so `kubectl rollout restart` after editing yours.
     auth:

@@ -3,9 +3,9 @@
 #
 # The default check set is deliberately NOT auto-added. kube-linter's defaults
 # encode a generic opinion about workloads; this chart has its own, written
-# down in the README's "Security posture" table, and the two disagree in places
-# where this chart is right (no CPU limit) and in places where it is simply
-# different (two replicas, not three).
+# down in the "Security posture" table in docs/security-model.md, and the two
+# disagree in places where this chart is right (no CPU limit) and in places
+# where it is simply different (two replicas, not three).
 #
 # So the include list below is not "kube-linter's recommendations". It is the
 # security posture table, restated in a form CI can enforce. A check earns its
