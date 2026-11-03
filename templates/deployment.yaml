@@ -40,16 +40,20 @@ spec:
       it stopped rendering the file.
 
       The whole block is conditional because with no limiter, no extra config
-      files and no commonAnnotations there is nothing to write, and a bare
-      `annotations:` key would serialise as null.
+      files, no relay engine and no commonAnnotations there is nothing to
+      write, and a bare `annotations:` key would serialise as null.
       */}}
-      {{- if or $limiter .Values.searxng.extraConfigFiles .Values.commonAnnotations }}
+      {{- $relayEngine := .Values.searxng.relayUserTokenEngine.enabled }}
+      {{- if or $limiter .Values.searxng.extraConfigFiles $relayEngine .Values.commonAnnotations }}
       annotations:
         {{- if $limiter }}
         checksum/limiter: {{ include (print $.Template.BasePath "/configmap-limiter.yaml") . | sha256sum }}
         {{- end }}
         {{- if .Values.searxng.extraConfigFiles }}
         checksum/extra-config: {{ include (print $.Template.BasePath "/configmap-extra.yaml") . | sha256sum }}
+        {{- end }}
+        {{- if $relayEngine }}
+        checksum/relay-engine: {{ include (print $.Template.BasePath "/configmap-relay-engine.yaml") . | sha256sum }}
         {{- end }}
         {{- with .Values.commonAnnotations }}
         {{- toYaml . | nindent 8 }}
@@ -166,6 +170,14 @@ spec:
               subPath: {{ $name }}
               readOnly: true
             {{- end }}
+            {{- if $relayEngine }}
+            # One file into the image's engine package, next to the built-in
+            # engines, so settings.yml can name it as `engine: relay_user_token`.
+            - name: relay-engine
+              mountPath: /usr/local/searxng/searx/engines/relay_user_token.py
+              subPath: relay_user_token.py
+              readOnly: true
+            {{- end }}
             # Writable scratch — required by readOnlyRootFilesystem.
             - name: cache
               mountPath: /var/cache/searxng
@@ -197,6 +209,12 @@ spec:
         - name: extra-config
           configMap:
             name: {{ include "searxng.fullname" . }}-extra
+            defaultMode: 0444
+        {{- end }}
+        {{- if $relayEngine }}
+        - name: relay-engine
+          configMap:
+            name: {{ include "searxng.fullname" . }}-relay-engine
             defaultMode: 0444
         {{- end }}
         - name: cache

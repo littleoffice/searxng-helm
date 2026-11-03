@@ -10,6 +10,7 @@
 | `values-config.yaml` | The config-file side — pointing at that Secret, limiter.toml, extra files. |
 | `values-production.yaml` | Everything on, all credentials from Secrets you manage. GitOps-safe. |
 | `values-multi-tenant.yaml` | Two teams, one SearXNG: a relay instance each, scoped to its own private engines. |
+| `values-user-tokens.yaml` | A private backend that sees which user is searching: OAuth on the relay, token exchange, the relay_user_token engine, SearXNG locked to the relays. |
 
 ## Quick start
 

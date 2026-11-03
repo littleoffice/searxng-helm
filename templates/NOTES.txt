@@ -166,6 +166,16 @@ Things worth checking
       kubectl -n {{ $.Release.Namespace }} port-forward svc/{{ include "searxng.relay.fullname" $inst }} 8080:{{ $r.service.port }}
       curl -s localhost:8080/fence/public-key
 {{- end }}
+{{- if $r.userToken.enabled }}
+  [user tokens] Searches carry a token for the calling user, exchanged at
+    {{ $r.userToken.tokenUrl }} as client {{ $r.userToken.clientId }}, in X-Relay-User-Token.
+    Add the relay_user_token engine to your settings.yml{{ if not $.Values.searxng.relayUserTokenEngine.enabled }}, and install it
+    with searxng.relayUserTokenEngine.enabled=true{{ end }}.
+{{- if $r.userToken.allowSharedSearxng }}
+  >> userToken.allowSharedSearxng is on: pods other than the relays can reach
+  >> SearXNG, and with it users' tokens in clear text.
+{{- end }}
+{{- end }}
 {{- if include "searxng.relay.healthTokenEnabled" $inst }}
   [health] /health is gated by MCP_HEALTH_TOKEN, so the readiness probe runs
     the relay's own `--healthcheck` self-probe instead of an HTTP GET — a

@@ -1,0 +1,85 @@
+# Per-user tokens: a private search backend that sees which user is searching.
+#
+# The MCP relay verifies each caller's OAuth token, exchanges it at your
+# identity provider (RFC 8693) for a token issued to your search backend, for
+# the same user, and sends it to SearXNG in X-Relay-User-Token. The
+# relay_user_token engine, installed by this chart, presents it to the backend
+# as `Authorization: Bearer`. Whole flow: docs/mcp-relay.md#per-user-tokens.
+#
+# Needs a relay image that has the feature (SEARXNG_USER_TOKEN_MODE); set
+# mcpRelay.image below to one once it is released.
+#
+# Objects to create first. The identity provider here is a Keycloak in the
+# `keycloak` namespace, with a realm `main`, a confidential client
+# `relay-client` allowed to do standard token exchange, and a client
+# `search-backend` for the backend.
+#
+#   # settings.yml with the engine added:
+#   #   engines:
+#   #     - name: private
+#   #       engine: relay_user_token
+#   #       base_url: https://search-backend.backend.svc/api/search
+#   #       shortcut: priv
+#   #       categories: [general]
+#   #       disabled: true
+#   kubectl -n search create secret generic searxng-settings \
+#     --from-file=settings.yml
+#
+#   kubectl -n search create secret generic relay-user-token \
+#     --from-literal=client-secret='<relay-client secret from Keycloak>'
+#
+#   helm install searxng ./searxng -n search -f examples/values-user-tokens.yaml
+
+image:
+  tag: "2026.7.22-ef8f6470e"
+
+searxng:
+  existingSettingsSecret: searxng-settings
+  # Mounts searx/engines/relay_user_token.py.
+  relayUserTokenEngine:
+    enabled: true
+
+networkPolicy:
+  enabled: true
+  ingress:
+    # SearXNG receives users' tokens over plain HTTP inside the cluster, so
+    # only the relays may reach it. The chart refuses to render userToken
+    # otherwise. The relays are let in by their own rule.
+    allowSameNamespace: false
+  egress:
+    # SearXNG -> the private backend. internet excludes private ranges.
+    extra:
+      - to:
+          - namespaceSelector:
+              matchLabels:
+                kubernetes.io/metadata.name: backend
+        ports:
+          - port: 443
+            protocol: TCP
+
+mcpRelay:
+  enabled: true
+  instances:
+    - name: default
+      oauth:
+        issuer: https://keycloak.example.com/realms/main
+        # What the tokens callers present carry in `aud`.
+        audience: relay-client
+      userToken:
+        enabled: true
+        tokenUrl: https://keycloak.example.com/realms/main/protocol/openid-connect/token
+        clientId: relay-client
+        audience: search-backend
+        existingSecret: relay-user-token
+      networkPolicy:
+        egress:
+          # Relay -> Keycloak, for the issuer's keys and the token exchange.
+          # Only needed when Keycloak resolves to a private address.
+          extra:
+            - to:
+                - namespaceSelector:
+                    matchLabels:
+                      kubernetes.io/metadata.name: keycloak
+              ports:
+                - port: 8443
+                  protocol: TCP

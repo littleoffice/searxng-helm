@@ -1,0 +1,21 @@
+{{- if .Values.searxng.relayUserTokenEngine.enabled }}
+{{/*
+The relay_user_token engine, verbatim from files/. Never passed through `tpl`:
+it is Python source, and template syntax inside it would be a bug, not a
+feature.
+*/}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "searxng.fullname" . }}-relay-engine
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "searxng.serverLabels" . | nindent 4 }}
+  {{- with .Values.commonAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+data:
+  relay_user_token.py: |
+    {{- .Files.Get "files/relay_user_token.py" | nindent 4 }}
+{{- end }}

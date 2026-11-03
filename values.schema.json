@@ -68,6 +68,31 @@
             "existingSecretKey": { "type": "string" }
           }
         },
+        "oauth": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "OAuth 2.0 / OIDC bearer-JWT verification, alongside the static tokens. issuer and audience together turn it on; rendered as MCP_OAUTH_* env vars.",
+          "properties": {
+            "issuer": { "type": "string", "description": "OIDC issuer URL." },
+            "audience": { "type": "string", "description": "Value every token must carry in aud: this relay." },
+            "identityClaim": { "type": "string", "description": "Claim used as the audit identity; empty means sub." },
+            "requiredScope": { "type": "string", "description": "Scope every token must grant; empty means none." }
+          }
+        },
+        "userToken": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Per-user tokens for SearXNG engines: each search carries an OAuth token for the calling user, exchanged (RFC 8693) for one issued to the search backend. Needs oauth.issuer/audience and a relay image with the feature. The client secret comes from a Secret you manage.",
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "tokenUrl": { "type": "string", "description": "The identity provider's token endpoint; https:// only." },
+            "clientId": { "type": "string", "description": "The relay's client at the provider." },
+            "audience": { "type": "string", "description": "The backend's client ID, sent as the RFC 8693 audience parameter." },
+            "existingSecret": { "type": "string", "description": "Secret holding the client secret." },
+            "existingSecretKey": { "type": "string" },
+            "allowSharedSearxng": { "type": "boolean", "description": "Render even though something other than the relays can reach SearXNG, which receives users' tokens over plain HTTP in-cluster." }
+          }
+        },
         "metrics": {
           "type": "object",
           "additionalProperties": false,
@@ -407,6 +432,14 @@
           }
         },
         "extraConfigFiles": { "type": "object", "additionalProperties": { "type": "string" } },
+        "relayUserTokenEngine": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Install the relay_user_token engine (from mcp-searxng-relay) into searx/engines/ for relays with userToken enabled. Add it to your settings.yml to use it.",
+          "properties": {
+            "enabled": { "type": "boolean" }
+          }
+        },
         "extraEnv": { "type": "array", "items": { "type": "object" } },
         "extraVolumes": { "type": "array", "items": { "type": "object" } },
         "extraVolumeMounts": { "type": "array", "items": { "type": "object" } }

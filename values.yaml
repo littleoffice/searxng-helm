@@ -323,6 +323,27 @@ searxng:
   # e.g. favicons.toml
   extraConfigFiles: {}
 
+  # --- Engine for per-user tokens from the MCP relay ------------------------
+  # Installs the relay_user_token engine (files/relay_user_token.py, from
+  # mcp-searxng-relay) into searx/engines/, for relays with
+  # mcpRelay...userToken.enabled. It reads the X-Relay-User-Token header those
+  # relays send and presents it to your backend as `Authorization: Bearer`.
+  # Installing it does nothing on its own: add it to your settings.yml, e.g.
+  #
+  #   engines:
+  #     - name: private
+  #       engine: relay_user_token
+  #       base_url: https://backend.internal/api/search
+  #       shortcut: priv
+  #       categories: [general]
+  #       disabled: true
+  #
+  # SearXNG must be able to reach base_url: a backend on a private address
+  # needs a rule under networkPolicy.egress.extra.
+  # See docs/mcp-relay.md#per-user-tokens.
+  relayUserTokenEngine:
+    enabled: false
+
   # Extra env vars on the SearXNG container. Use valueFrom for anything secret.
   extraEnv: []
   # - name: SEARXNG_METHOD
@@ -656,7 +677,8 @@ mcpRelay:
   #
   # Non-secret only. Credential-shaped keys (MCP_AUTH_TOKEN, MCP_AUTH_TOKENS,
   # MCP_HEALTH_TOKEN, MCP_METRICS_TOKEN, SEARXNG_TOKENS, FENCE_SIGNING_KEY,
-  # AUTH_PASSWORD) are refused at render time: those have Secrets of their own.
+  # AUTH_PASSWORD, SEARXNG_USER_TOKEN_CLIENT_SECRET) are refused at render
+  # time: those have Secrets of their own.
   config: {}
   #   CACHE_TTL_SECONDS: "300"
   #   CACHE_MAX_ENTRIES: "1000"
@@ -774,6 +796,58 @@ mcpRelay:
     healthToken:
       existingSecret: ""
       existingSecretKey: "health-token"
+
+    # --- OAuth 2.0 / OIDC ----------------------------------------------------
+    # Verify bearer JWTs from your identity provider, alongside the static
+    # tokens above. issuer and audience together turn it on; see "OAuth 2.0 /
+    # OIDC" in the relay's docs/configuration.md. Rendered as MCP_OAUTH_*
+    # env vars, which win over the same keys in a ConfigMap.
+    #
+    # The relay fetches the issuer's discovery document and keys at startup.
+    # networkPolicy.egress.internet excludes private ranges, so an issuer on a
+    # private address (an in-cluster Keycloak) needs a rule under
+    # networkPolicy.egress.extra.
+    oauth:
+      issuer: ""
+      # The value tokens must carry in `aud`: this relay.
+      audience: ""
+      # Claim used as the audit identity; empty means `sub`.
+      identityClaim: ""
+      # Scope every token must grant; empty means none.
+      requiredScope: ""
+
+    # --- Per-user tokens for SearXNG engines --------------------------------
+    # Each search carries an OAuth token for the calling user, exchanged at
+    # your identity provider (RFC 8693) for one issued to your search backend,
+    # in the X-Relay-User-Token header. The relay_user_token engine
+    # (searxng.relayUserTokenEngine) hands it to the backend, which applies
+    # that user's permissions. See docs/mcp-relay.md#per-user-tokens and the
+    # relay's docs/user-tokens.md.
+    #
+    # Needs a relay image that has the feature, and oauth.issuer/audience
+    # above. The client secret comes from a Secret you manage:
+    #
+    #   kubectl -n <ns> create secret generic relay-user-token \
+    #     --from-literal=client-secret='<relay client secret>'
+    #
+    # The chart reaches SearXNG over plain HTTP inside the cluster, so it
+    # refuses to render this unless SearXNG is reachable by the relays only:
+    # networkPolicy.enabled, networkPolicy.ingress.allowSameNamespace=false,
+    # no other networkPolicy.ingress sources, and SearXNG's own ingress off.
+    # allowSharedSearxng=true accepts the risk instead: anything else that can
+    # reach SearXNG could then read users' tokens off the wire or replay them.
+    userToken:
+      enabled: false
+      # The provider's token endpoint; https:// only.
+      tokenUrl: ""
+      # The relay's client at the provider.
+      clientId: ""
+      # The backend's client ID, sent as the RFC 8693 `audience` parameter.
+      # Keycloak needs it; authentik can leave it empty.
+      audience: ""
+      existingSecret: ""
+      existingSecretKey: "client-secret"
+      allowSharedSearxng: false
 
     # --- /metrics -----------------------------------------------------------
     # Prometheus text format behind a bearer token. Enabling this mints a
@@ -917,7 +991,9 @@ mcpRelay:
   # `kubectl rollout restart` after a change. These keys are set by the chart
   # and cannot be overridden from a ConfigMap, because objects it renders
   # depend on them: MCP_PORT, SEARXNG_URL, MCP_AUTH_TOKEN_FILE,
-  # FENCE_SIGNING_KEY_FILE, SEARXNG_TOKENS, MCP_HEALTH_TOKEN, MCP_METRICS_TOKEN.
+  # FENCE_SIGNING_KEY_FILE, SEARXNG_TOKENS, MCP_HEALTH_TOKEN, MCP_METRICS_TOKEN,
+  # and, when the matching values are set, MCP_OAUTH_* and
+  # SEARXNG_USER_TOKEN_*.
   instances:
     - name: default
       existingConfigMap: ""

@@ -114,6 +114,7 @@ release history:
 | SearXNG private-engine tokens | `instances[].searxngTokens.existingSecret` |
 | Relay fence signing key | `instances[].fenceKey.existingSecret` |
 | Relay `/health` token | `instances[].healthToken.existingSecret` |
+| Relay client secret for per-user token exchange | `instances[].userToken.existingSecret` |
 
 The schema rejects the old inline fields rather than ignoring them, so a 1.x
 values file naming one fails the render instead of quietly dropping a

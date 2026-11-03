@@ -17,6 +17,7 @@ SSRF-protected URL fetching and Ed25519-signed responses.
 - [Replicas and sessions](#replicas-and-sessions)
 - [Reaching internal URLs](#reaching-internal-urls)
 - [Verifying the signatures with fence-gateway](#verifying-the-signatures-with-fence-gateway)
+- [Per-user tokens](#per-user-tokens)
 
 ## Enabling it
 
@@ -318,3 +319,115 @@ instance's Ingress off, so clients reach the gateway and never the relay; and
 the instance's `networkPolicy.ingress` narrowed to the gateway's pods. The
 values for that are in fence-gateway's
 [Kubernetes deployment guide](https://github.com/littleoffice/fence-gateway/blob/main/docs/deployment.md#kubernetes--searxng-helm).
+
+## Per-user tokens
+
+By default a relay searches as itself, so a SearXNG engine in front of a
+permission-aware system (a wiki, a ticket tracker, a document store) can only
+search as a shared service account. With `userToken.enabled`, every search
+carries an OAuth token **for the user behind the MCP call**, issued by your
+identity provider **for the search backend**, and the backend applies that
+user's own permissions. How the relay does it, and every security property it
+guarantees, is in the relay's
+[Per-user tokens for SearXNG engines](https://github.com/littleoffice/mcp-searxng-relay/blob/main/docs/user-tokens.md).
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant C as MCP client<br/>(or fence-gateway)
+    participant IdP as Identity provider
+    participant R as Relay instance
+    participant S as SearXNG
+    participant E as relay_user_token engine
+    participant B as Search backend
+
+    C->>R: tools/call searxng_web_search<br/>Authorization: Bearer B (aud = relay)
+    R->>R: verify B (oauth.issuer, oauth.audience)
+    R->>IdP: token exchange B → backend (userToken.tokenUrl)
+    IdP-->>R: token C (aud = backend, same user)
+    R->>S: /search … X-Relay-User-Token: C<br/>(plain HTTP in-cluster, NetworkPolicy: relays only)
+    S->>E: engine reads the header
+    E->>B: Authorization: Bearer C
+    B-->>E: that user's results only
+    E-->>S: results
+    S-->>R: results
+    R-->>C: signed results
+```
+
+What the chart does:
+
+| Piece | Values | Renders |
+|---|---|---|
+| The relay verifies OAuth tokens | `instances[].oauth.issuer`, `.audience` (and optionally `.identityClaim`, `.requiredScope`) | `MCP_OAUTH_*` env vars |
+| The relay exchanges them | `instances[].userToken.*` | `SEARXNG_USER_TOKEN_*` env vars; the client secret by `secretKeyRef` from `userToken.existingSecret` |
+| SearXNG can hand the token on | `searxng.relayUserTokenEngine.enabled` | A ConfigMap holding `relay_user_token.py`, mounted into `searx/engines/` |
+
+The engine is installed, not configured: add it to your settings.yml, which the
+chart never writes.
+
+```yaml
+engines:
+  - name: private
+    engine: relay_user_token
+    base_url: https://search-backend.backend.svc/api/search
+    shortcut: priv
+    categories: [general]
+    disabled: true
+```
+
+A complete values file is [`examples/values-user-tokens.yaml`](../examples/values-user-tokens.yaml).
+
+### What the chart refuses
+
+The chart's `SEARXNG_URL` is plain HTTP inside the cluster, so the user tokens
+are only as private as the set of pods that can reach SearXNG. With
+`userToken.enabled` the chart refuses to render unless SearXNG is reachable by
+the relays only:
+
+- `networkPolicy.enabled: true`;
+- `networkPolicy.ingress.allowSameNamespace: false` (the relays keep their own
+  rule);
+- `networkPolicy.ingress.fromNamespaces`, `.from` and `.extra` empty;
+- SearXNG's own `ingress.enabled: false`.
+
+Only then does it tell the relay to accept the plaintext hop
+(`SEARXNG_USER_TOKEN_ALLOW_PLAINTEXT`). `userToken.allowSharedSearxng: true`
+renders anyway and accepts that anything else reaching SearXNG can read users'
+tokens off the wire or replay them.
+
+It also refuses `userToken` without `oauth.issuer` and `oauth.audience`, a
+`tokenUrl` that is not `https://`, a missing `clientId` or Secret, `oauth.issuer`
+without `oauth.audience` (or the reverse), and
+`SEARXNG_USER_TOKEN_CLIENT_SECRET` in `mcpRelay.config`.
+
+### What you add
+
+- **The Secret** with the relay's client secret:
+
+  ```bash
+  kubectl -n <ns> create secret generic relay-user-token \
+    --from-literal=client-secret='<relay client secret>'
+  ```
+
+- **Egress for the relay to your identity provider**, when it resolves to a
+  private address: the relay's internet rule excludes private ranges. Add it
+  under `instances[].networkPolicy.egress.extra`.
+- **Egress for SearXNG to the backend**, likewise, under
+  `networkPolicy.egress.extra`.
+- **A relay image with the feature.** Older images ignore the
+  `SEARXNG_USER_TOKEN_*` variables and search without a user token, which the
+  engine answers with nothing.
+
+### Side effects
+
+- **`helm test` cannot reach SearXNG** once only the relays may: the test pod
+  is neither a relay nor in an allowed namespace. Test through a relay instead.
+- **Sessions are bound to their user.** A relay with `userToken` hands the MCP
+  SDK each request's identity, so a session one OAuth user created answers
+  `403` to anyone else.
+- **The engine is a copy.** `files/relay_user_token.py` is the relay
+  repository's `deploy/searxng-engine/relay_user_token.py`; its header names
+  the commit. It relies on SearXNG running engines inside the Flask request
+  context, which is not a documented engine API, so pin `image.digest` and
+  re-test after SearXNG upgrades. If that ever breaks, the engine returns
+  nothing rather than searching without a user.

@@ -137,6 +137,45 @@ editing that Secret — the same caveat as settings.yml.
                   name: {{ include "searxng.relay.healthTokenSecretName" $inst }}
                   key: {{ include "searxng.relay.healthTokenSecretKey" $inst }}
             {{- end }}
+            {{- if and $r.oauth.issuer $r.oauth.audience }}
+            # OAuth 2.0 / OIDC verification, alongside the static tokens.
+            - name: MCP_OAUTH_ISSUER
+              value: {{ $r.oauth.issuer | quote }}
+            - name: MCP_OAUTH_AUDIENCE
+              value: {{ $r.oauth.audience | quote }}
+            {{- with $r.oauth.identityClaim }}
+            - name: MCP_OAUTH_IDENTITY_CLAIM
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with $r.oauth.requiredScope }}
+            - name: MCP_OAUTH_REQUIRED_SCOPE
+              value: {{ . | quote }}
+            {{- end }}
+            {{- end }}
+            {{- if $r.userToken.enabled }}
+            # Per-user tokens for SearXNG engines (RFC 8693 token exchange).
+            - name: SEARXNG_USER_TOKEN_MODE
+              value: exchange
+            - name: SEARXNG_USER_TOKEN_URL
+              value: {{ $r.userToken.tokenUrl | quote }}
+            - name: SEARXNG_USER_TOKEN_CLIENT_ID
+              value: {{ $r.userToken.clientId | quote }}
+            {{- with $r.userToken.audience }}
+            - name: SEARXNG_USER_TOKEN_AUDIENCE
+              value: {{ . | quote }}
+            {{- end }}
+            # From your Secret, like the other relay credentials; never inline.
+            - name: SEARXNG_USER_TOKEN_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $r.userToken.existingSecret }}
+                  key: {{ $r.userToken.existingSecretKey }}
+            # SEARXNG_URL is plain HTTP inside the cluster. searxng.relay.validate
+            # has already refused to render unless SearXNG is reachable by the
+            # relays only, or userToken.allowSharedSearxng accepted the risk.
+            - name: SEARXNG_USER_TOKEN_ALLOW_PLAINTEXT
+              value: "true"
+            {{- end }}
             {{- if $r.metrics.enabled }}
             # /metrics has its own credential on relay images that gate it
             # separately; older ones ignore this and gate on the MCP token

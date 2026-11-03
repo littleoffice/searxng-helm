@@ -435,6 +435,87 @@ jobs:
       - name: Credential consistency
         run: ./hack/test-credential-consistency.sh .
 
+      # Per-user tokens send users' OAuth tokens to SearXNG over plain HTTP
+      # inside the cluster. The chart's promise is that it only renders that
+      # when SearXNG is reachable by the relays alone, and that the engine it
+      # mounts is the file in files/, byte for byte.
+      - name: Per-user tokens render only when SearXNG is locked to the relays
+        run: |
+          set -euo pipefail
+          ex=examples/values-user-tokens.yaml
+
+          refuse() {
+            local why="$1" want="$2"; shift 2
+            if helm template t . -f "${ex}" "$@" >/tmp/ut.err 2>&1; then
+              echo "rendered, but should refuse: ${why}" >&2
+              exit 1
+            fi
+            grep -q "${want}" /tmp/ut.err || { cat /tmp/ut.err >&2; exit 1; }
+            echo "refused: ${why}"
+          }
+          i='mcpRelay.instances[0]'
+          refuse "no oauth" "needs oauth.issuer and oauth.audience" \
+            --set "${i}.oauth.issuer=" --set "${i}.oauth.audience="
+          refuse "issuer without audience" "go together" --set "${i}.oauth.audience="
+          refuse "http token endpoint" "must be an https://" \
+            --set "${i}.userToken.tokenUrl=http://idp.example/token"
+          refuse "no client id" "clientId is empty" --set "${i}.userToken.clientId="
+          refuse "no client secret" "must name the Secret" \
+            --set "${i}.userToken.existingSecret="
+          refuse "same-namespace access" "reachable by the relays only" \
+            --set networkPolicy.ingress.allowSameNamespace=true
+          refuse "no NetworkPolicy" "networkPolicy.enabled is false" \
+            --set networkPolicy.enabled=false
+          refuse "other namespaces" "fromNamespaces is not empty" \
+            --set 'networkPolicy.ingress.fromNamespaces[0]=ingress-nginx'
+          refuse "client secret in mcpRelay.config" "is a credential" \
+            --set mcpRelay.config.SEARXNG_USER_TOKEN_CLIENT_SECRET=x
+
+          helm template t . -f "${ex}" \
+            --set networkPolicy.ingress.allowSameNamespace=true \
+            --set "${i}.userToken.allowSharedSearxng=true" >/dev/null
+          echo "allowSharedSearxng accepts the risk explicitly"
+
+          helm template t . -f "${ex}" > /tmp/ut.yaml
+          python3 - <<'PY'
+          import yaml
+
+          docs = [d for d in yaml.safe_load_all(open('/tmp/ut.yaml')) if d]
+          by = lambda kind, suffix: next(
+              d for d in docs
+              if d['kind'] == kind and d['metadata']['name'].endswith(suffix))
+
+          cm = by('ConfigMap', '-relay-engine')
+          assert cm['data']['relay_user_token.py'] == open('files/relay_user_token.py').read()
+
+          sx = by('Deployment', 't-searxng')['spec']['template']['spec']
+          mount = next(m for m in sx['containers'][0]['volumeMounts'] if m['name'] == 'relay-engine')
+          assert mount['mountPath'] == '/usr/local/searxng/searx/engines/relay_user_token.py', mount
+          assert mount['readOnly'] is True
+
+          relay = by('Deployment', '-mcp-relay')['spec']['template']['spec']['containers'][0]
+          env = {e['name']: e for e in relay['env']}
+          assert env['SEARXNG_USER_TOKEN_MODE']['value'] == 'exchange'
+          assert env['SEARXNG_USER_TOKEN_ALLOW_PLAINTEXT']['value'] == 'true'
+          assert 'value' not in env['SEARXNG_USER_TOKEN_CLIENT_SECRET'], 'client secret inline'
+          ref = env['SEARXNG_USER_TOKEN_CLIENT_SECRET']['valueFrom']['secretKeyRef']
+          assert ref == {'name': 'relay-user-token', 'key': 'client-secret'}, ref
+          assert env['MCP_OAUTH_ISSUER']['value'].startswith('https://')
+
+          np = by('NetworkPolicy', 't-searxng')
+          peers = [p for rule in np['spec']['ingress'] for p in rule['from']]
+          for p in peers:
+              assert p.get('podSelector', {}).get('matchLabels', {}).get(
+                  'app.kubernetes.io/component') == 'mcp-relay', p
+          print('engine mounted verbatim, secret by reference, SearXNG reachable by relays only')
+          PY
+
+          # And nothing of it when the feature is off.
+          helm template t . --set searxng.existingSettingsSecret=s \
+            --set mcpRelay.enabled=true > /tmp/off.yaml
+          ! grep -q 'SEARXNG_USER_TOKEN\|relay-engine\|MCP_OAUTH' /tmp/off.yaml
+          echo "off by default"
+
       # settings.yml comes from a Secret and from nowhere else. The chart does
       # not render it, does not ship a default for it, and refuses to render at
       # all without one: an empty settings.yml is not an empty configuration --

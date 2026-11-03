@@ -614,8 +614,8 @@ Every one of these has a Secret of its own; refusing here keeps the rule that
 no values field anywhere takes secret material.
 */}}
 {{- range $k, $v := .Values.mcpRelay.config -}}
-{{- if has $k (list "MCP_AUTH_TOKEN" "MCP_AUTH_TOKENS" "MCP_HEALTH_TOKEN" "MCP_METRICS_TOKEN" "SEARXNG_TOKENS" "FENCE_SIGNING_KEY" "AUTH_PASSWORD") -}}
-{{- fail (printf "mcpRelay.config.%s is a credential, and mcpRelay.config is rendered into a ConfigMap. Use the matching Secret instead: auth.existingSecret, healthToken.existingSecret, metrics.existingSecret, searxngTokens.existingSecret or fenceKey.existingSecret." $k) -}}
+{{- if has $k (list "MCP_AUTH_TOKEN" "MCP_AUTH_TOKENS" "MCP_HEALTH_TOKEN" "MCP_METRICS_TOKEN" "SEARXNG_TOKENS" "FENCE_SIGNING_KEY" "AUTH_PASSWORD" "SEARXNG_USER_TOKEN_CLIENT_SECRET") -}}
+{{- fail (printf "mcpRelay.config.%s is a credential, and mcpRelay.config is rendered into a ConfigMap. Use the matching Secret instead: auth.existingSecret, healthToken.existingSecret, metrics.existingSecret, searxngTokens.existingSecret, fenceKey.existingSecret or userToken.existingSecret." $k) -}}
 {{- end -}}
 {{- end -}}
 {{- if not .Values.mcpRelay.instances -}}
@@ -660,6 +660,49 @@ no values field anywhere takes secret material.
 {{- if and $r.ingress.enabled (not $r.ingress.hosts) -}}
 {{- fail (printf "%s: ingress.enabled is true but ingress.hosts is empty." $where) -}}
 {{- end -}}
+{{- if and (or $r.oauth.issuer $r.oauth.audience) (not (and $r.oauth.issuer $r.oauth.audience)) -}}
+{{- fail (printf "%s: oauth.issuer and oauth.audience go together: the issuer says who signs tokens, the audience says which tokens are meant for this relay. Set both, or neither." $where) -}}
+{{- end -}}
+{{- if $r.userToken.enabled -}}
+{{- include "searxng.relay.validateUserToken" (dict "ctx" $ "relay" $r "where" $where) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+Per-user tokens (userToken). Every refusal here is one the relay would also
+make at startup, or a deployment rule the relay cannot check: the chart's
+SEARXNG_URL is plain HTTP inside the cluster, so the tokens it carries are
+only as private as the set of pods that can reach SearXNG.
+*/}}
+{{- define "searxng.relay.validateUserToken" -}}
+{{- $r := .relay -}}
+{{- $where := .where -}}
+{{- $v := .ctx.Values -}}
+{{- if not (and $r.oauth.issuer $r.oauth.audience) -}}
+{{- fail (printf "%s: userToken.enabled needs oauth.issuer and oauth.audience. Only a verified OAuth token identifies a user to exchange; static bearer tokens have no user behind them." $where) -}}
+{{- end -}}
+{{- if not (hasPrefix "https://" $r.userToken.tokenUrl) -}}
+{{- fail (printf "%s: userToken.tokenUrl must be an https:// URL (got %q). It carries the relay's client secret and users' tokens." $where $r.userToken.tokenUrl) -}}
+{{- end -}}
+{{- if not $r.userToken.clientId -}}
+{{- fail (printf "%s: userToken.clientId is empty: name the relay's client at the identity provider." $where) -}}
+{{- end -}}
+{{- if not (and $r.userToken.existingSecret $r.userToken.existingSecretKey) -}}
+{{- fail (printf "%s: userToken.existingSecret and userToken.existingSecretKey must name the Secret holding the relay's client secret. There is no inline field: it is a credential." $where) -}}
+{{- end -}}
+{{- if not $r.userToken.allowSharedSearxng -}}
+{{- $np := $v.networkPolicy -}}
+{{- $open := list -}}
+{{- if not $np.enabled -}}{{- $open = append $open "networkPolicy.enabled is false" -}}{{- end -}}
+{{- if $np.ingress.allowSameNamespace -}}{{- $open = append $open "networkPolicy.ingress.allowSameNamespace is true" -}}{{- end -}}
+{{- if $np.ingress.fromNamespaces -}}{{- $open = append $open "networkPolicy.ingress.fromNamespaces is not empty" -}}{{- end -}}
+{{- if $np.ingress.from -}}{{- $open = append $open "networkPolicy.ingress.from is not empty" -}}{{- end -}}
+{{- if $np.ingress.extra -}}{{- $open = append $open "networkPolicy.ingress.extra is not empty" -}}{{- end -}}
+{{- if $v.ingress.enabled -}}{{- $open = append $open "ingress.enabled is true" -}}{{- end -}}
+{{- if $open -}}
+{{- fail (printf "%s: userToken.enabled sends users' tokens to SearXNG over plain HTTP, so SearXNG must be reachable by the relays only. Not the case here: %s. Fix those, or set userToken.allowSharedSearxng=true to accept that anything else reaching SearXNG can read and replay users' tokens." $where (join "; " $open)) -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}
