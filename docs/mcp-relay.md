@@ -422,9 +422,9 @@ without `oauth.audience` (or the reverse), and
 
 - **`helm test` cannot reach SearXNG** once only the relays may: the test pod
   is neither a relay nor in an allowed namespace. Test through a relay instead.
-- **Sessions are bound to their user.** A relay with `userToken` hands the MCP
-  SDK each request's identity, so a session one OAuth user created answers
-  `403` to anyone else.
+- **Works behind fence-gateway.** The user token comes from each request, not
+  from the MCP session, so a gateway that opens relay sessions under its own
+  credential still gets every user's search sent with that user's token.
 - **The engine is a copy.** `files/relay_user_token.py` is the relay
   repository's `deploy/searxng-engine/relay_user_token.py`; its header names
   the commit. It relies on SearXNG running engines inside the Flask request
