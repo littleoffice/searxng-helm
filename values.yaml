@@ -18,6 +18,19 @@ commonLabels: {}
 commonAnnotations: {}
 
 # -----------------------------------------------------------------------------
+# Global
+# -----------------------------------------------------------------------------
+global:
+  # Pull every image from this registry instead of its upstream one, e.g.
+  # "harbor.example.com/mirror". Replaces the registry of all five images,
+  # overriding their per-image `registry` keys; repository paths and digest
+  # pins are kept, so the mirror must serve each image under its upstream
+  # path. Host[:port], optionally followed by a path; no scheme, no trailing
+  # slash. Empty means each image's own registry.
+  # How to fill the mirror and verify what is in it: docs/mirroring.md.
+  imageRegistry: ""
+
+# -----------------------------------------------------------------------------
 # Image
 # -----------------------------------------------------------------------------
 image:

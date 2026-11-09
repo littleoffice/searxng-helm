@@ -75,12 +75,20 @@ given; only the SearXNG image has a meaningful one (.Chart.AppVersion), and the
 rest pass nothing, so a missing pin fails at render rather than resolving to
 something arbitrary.
 
+`global.imageRegistry`, when set, replaces every image's registry — the
+per-image `registry` keys included, since values.yaml fills those in and an
+explicit setting cannot be told apart from the default. Repository paths and
+digests are left alone, so a mirror that keeps upstream paths serves the exact
+bytes the chart pins. It is how a cluster that must not pull from public
+registries points the whole chart at one internal one: docs/mirroring.md.
+
 Call with:
-  (dict "name" "<values path>" "img" <the image map> "registry" "<default>" "tag" "<default>")
+  (dict "name" "<values path>" "img" <the image map> "registry" "<default>" "tag" "<default>" "root" $)
 */}}
 {{- define "searxng.imageRef" -}}
 {{- $img := .img -}}
-{{- $registry := $img.registry | default .registry -}}
+{{- $global := dig "imageRegistry" "" (.root.Values.global | default dict) -}}
+{{- $registry := $global | default $img.registry | default .registry -}}
 {{- $ref := $img.repository -}}
 {{- if $registry -}}
 {{- $ref = printf "%s/%s" $registry $img.repository -}}
@@ -126,11 +134,11 @@ names the image but not the values key that produced it.
 {{- end -}}
 
 {{- define "searxng.image" -}}
-{{- include "searxng.imageRef" (dict "name" "image" "img" .Values.image "registry" "docker.io" "tag" .Chart.AppVersion) -}}
+{{- include "searxng.imageRef" (dict "name" "image" "img" .Values.image "registry" "docker.io" "tag" .Chart.AppVersion "root" $) -}}
 {{- end -}}
 
 {{- define "searxng.valkey.image" -}}
-{{- include "searxng.imageRef" (dict "name" "valkey.image" "img" .Values.valkey.image "registry" "docker.io") -}}
+{{- include "searxng.imageRef" (dict "name" "valkey.image" "img" .Values.valkey.image "registry" "docker.io" "root" $) -}}
 {{- end -}}
 
 {{/* ------------------------------------------------------------------ */}}
@@ -423,12 +431,12 @@ app.kubernetes.io/component: {{ include "searxng.relay.component" . }}
 {{- end -}}
 
 {{- define "searxng.relay.image" -}}
-{{- include "searxng.imageRef" (dict "name" "mcpRelay.image" "img" .Values.mcpRelay.image "registry" "ghcr.io") -}}
+{{- include "searxng.imageRef" (dict "name" "mcpRelay.image" "img" .Values.mcpRelay.image "registry" "ghcr.io" "root" $) -}}
 {{- end -}}
 
 {{/* The helm test pod. Same three keys, same helper as every other image. */}}
 {{- define "searxng.tests.image" -}}
-{{- include "searxng.imageRef" (dict "name" "tests.image" "img" .Values.tests.image "registry" "docker.io") -}}
+{{- include "searxng.imageRef" (dict "name" "tests.image" "img" .Values.tests.image "registry" "docker.io" "root" $) -}}
 {{- end -}}
 
 {{- define "searxng.relay.serviceAccountName" -}}
@@ -860,7 +868,7 @@ app.kubernetes.io/component: valkey-replica
 {{- end -}}
 
 {{- define "searxng.valkey.exporterImage" -}}
-{{- include "searxng.imageRef" (dict "name" "valkey.metrics.image" "img" .Values.valkey.metrics.image "registry" "docker.io") -}}
+{{- include "searxng.imageRef" (dict "name" "valkey.metrics.image" "img" .Values.valkey.metrics.image "registry" "docker.io" "root" $) -}}
 {{- end -}}
 
 {{/* ------------------------------------------------------------------ */}}

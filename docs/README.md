@@ -5,6 +5,7 @@ Reference documentation for searxng-helm. The project overview, features and qui
 | Document | Contents |
 |---|---|
 | [Installation](installation.md) | Requirements, the published chart, installing from a clone, examples, validating changes, known limitations |
+| [Running from your own registry](mirroring.md) | Mirroring the chart and its images, `global.imageRegistry`, verifying before admitting, GitOps |
 | [Configuration](configuration.md) | settings.yml, custom engines, the limiter, Valkey, ingress, Open WebUI, notable values |
 | [MCP relay](mcp-relay.md) | Instances and identities, configuration layers, engine scoping, exposing it, fence-gateway |
 | [Architecture](architecture.md) | What the chart renders, every NetworkPolicy rule, starting without an init container |

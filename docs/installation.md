@@ -47,6 +47,9 @@ it shipped.
 `helm install` does not check the signature. Verify it as a separate step:
 [Verification](supply-chain.md#verification).
 
+To install from a registry you run instead of `ghcr.io` and the upstream image
+registries, see [Running from your own registry](mirroring.md).
+
 The namespace is whatever you pass to `-n` — nothing in the chart assumes one.
 
 ## Installing from a clone
