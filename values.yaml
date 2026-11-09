@@ -27,7 +27,7 @@ global:
   # pins are kept, so the mirror must serve each image under its upstream
   # path. Host[:port], optionally followed by a path; no scheme, no trailing
   # slash. Empty means each image's own registry.
-  # How to fill the mirror and verify what is in it: docs/mirroring.md.
+  # What the mirror must serve, and when per-image keys fit better: docs/mirroring.md.
   imageRegistry: ""
 
 # -----------------------------------------------------------------------------

@@ -42,7 +42,7 @@ A hardened Helm chart for [SearXNG](https://docs.searxng.org), the self-hosted m
 - **[Persistent fence signing key](https://github.com/littleoffice/searxng-helm/blob/main/docs/mcp-relay.md#verifying-the-signatures-with-fence-gateway)** — mounted from a Secret, so a verifying [fence-gateway](https://github.com/littleoffice/fence-gateway) can pin the relay's key across rollouts and replicas.
 - **[Metrics](https://github.com/littleoffice/searxng-helm/blob/main/docs/observability.md)** — ServiceMonitors for SearXNG, each relay instance and Valkey, each behind a credential or a NetworkPolicy of its own.
 - **[Pinned images](https://github.com/littleoffice/searxng-helm/blob/main/docs/supply-chain.md#images)** — every image pinned by digest, bumped by Renovate as one patch release, and scanned on every change and daily.
-- **[Your own registry](https://github.com/littleoffice/searxng-helm/blob/main/docs/mirroring.md)** — one value, `global.imageRegistry`, points every image at your mirror with its digest pin intact, and the guide covers verifying a release before admitting it.
+- **[Your own registry](https://github.com/littleoffice/searxng-helm/blob/main/docs/mirroring.md)** — one value, `global.imageRegistry`, points every image at your mirror with its digest pin intact; the guide lists what the mirror must serve.
 - **[Signed releases](https://github.com/littleoffice/searxng-helm/blob/main/docs/supply-chain.md#build-provenance)** — a keyless cosign signature, provenance attestations, and SBOMs and a scan report per release.
 - **[Tested on real clusters](https://github.com/littleoffice/searxng-helm/blob/main/.github/ci/README.md#jobs)** — six scenarios installed, tested and upgraded in place under Helm 3 and Helm 4, and the last published release upgraded to every change without re-minting a credential.
 
@@ -255,7 +255,7 @@ Report vulnerabilities privately: [docs/SECURITY.md](https://github.com/littleof
 | Document | Contents |
 |---|---|
 | [Installation](https://github.com/littleoffice/searxng-helm/blob/main/docs/installation.md) | Requirements, the published chart, installing from a clone, examples, validating changes, known limitations |
-| [Running from your own registry](https://github.com/littleoffice/searxng-helm/blob/main/docs/mirroring.md) | Mirroring the chart and its images, `global.imageRegistry`, verifying before admitting, GitOps |
+| [Running from your own registry](https://github.com/littleoffice/searxng-helm/blob/main/docs/mirroring.md) | `global.imageRegistry`, the path and digest contract a mirror must meet, the images to mirror |
 | [Configuration](https://github.com/littleoffice/searxng-helm/blob/main/docs/configuration.md) | settings.yml, custom engines, the limiter, Valkey, ingress, Open WebUI, notable values |
 | [MCP relay](https://github.com/littleoffice/searxng-helm/blob/main/docs/mcp-relay.md) | Instances and identities, configuration layers, engine scoping, exposing it, fence-gateway |
 | [Architecture](https://github.com/littleoffice/searxng-helm/blob/main/docs/architecture.md) | What the chart renders, every NetworkPolicy rule, starting without an init container |
