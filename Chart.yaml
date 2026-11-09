@@ -22,7 +22,7 @@ version: 2.1.0
 # Default container image tag when `image.tag` is empty.
 # NOTE: "latest" is a convenience only. Pin an immutable tag (e.g. 2026.7.22-ef8f6470e)
 # or, better, an image digest via `image.digest` for production.
-appVersion: "2026.10.30-ffa88e3ba"
+appVersion: "2026.11.8-3a3dd15bf"
 
 kubeVersion: ">=1.25.0-0"
 
