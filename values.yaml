@@ -18,6 +18,20 @@ commonLabels: {}
 commonAnnotations: {}
 
 # -----------------------------------------------------------------------------
+# Global
+# -----------------------------------------------------------------------------
+global:
+  # Pull every image from this registry instead of its upstream one, e.g.
+  # "harbor.example.com/mirror". Images then resolve to
+  # <imageRegistry>/<upstream repository>@<digest>: paths and digest pins are
+  # kept, so mirror the full multi-arch index under the upstream path. Overrides
+  # every per-image `registry` key. Host[:port], optionally followed by a path;
+  # no scheme, no trailing slash. Empty means each image's own registry.
+  # Per-upstream proxy caches or a mirror that renames paths don't fit one
+  # prefix: leave this empty and set each image's registry/repository instead.
+  imageRegistry: ""
+
+# -----------------------------------------------------------------------------
 # Image
 # -----------------------------------------------------------------------------
 image:
