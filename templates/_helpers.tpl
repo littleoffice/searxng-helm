@@ -80,7 +80,7 @@ per-image `registry` keys included, since values.yaml fills those in and an
 explicit setting cannot be told apart from the default. Repository paths and
 digests are left alone, so a mirror that keeps upstream paths serves the exact
 bytes the chart pins. It is how a cluster that must not pull from public
-registries points the whole chart at one internal one: docs/mirroring.md.
+registries points the whole chart at one internal one.
 
 Call with:
   (dict "name" "<values path>" "img" <the image map> "registry" "<default>" "tag" "<default>" "root" $)

@@ -283,7 +283,7 @@
       "properties": {
         "imageRegistry": {
           "type": "string",
-          "description": "Registry every image is pulled from, replacing each image's own `registry`. Host[:port] with an optional path, no scheme, no trailing slash. Empty means each image's own registry. See docs/mirroring.md.",
+          "description": "Registry every image is pulled from, replacing each image's own `registry`. Host[:port] with an optional path, no scheme, no trailing slash. Empty means each image's own registry.",
           "pattern": "^$|^[A-Za-z0-9.-]+(:[0-9]+)?(/[a-z0-9._-]+)*$"
         }
       }
