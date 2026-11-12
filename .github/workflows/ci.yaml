@@ -33,6 +33,10 @@ env:
   # burden nobody wrote down.
   # renovate: datasource=github-releases depName=helm/helm
   HELM_VERSION: v4.3.1
+  # The same pin as renovate.yaml, so the validator checks renovate.json
+  # against the version that will read it.
+  # renovate: datasource=npm depName=renovate
+  RENOVATE_VERSION: "44.235.1"
   # Pinned by hand on purpose: this is the *legacy* line under test, so it
   # tracks whatever Helm 3 release the chart still promises to install under,
   # not the newest thing published.
@@ -86,10 +90,10 @@ jobs:
       # is the only thing that turns that into a failure someone notices.
       #
       # Note what it does *not* catch: a rule that is well-formed but matches
-      # nothing. Use `npx --yes renovate --dry-run=full --platform=local` in a
+      # nothing. Use `npx --yes renovate@<RENOVATE_VERSION> --dry-run=full --platform=local` in a
       # clone to see which dependencies are actually extracted.
       - name: Validate renovate.json
-        run: npx --yes --package renovate -- renovate-config-validator --strict
+        run: npx --yes --package "renovate@${RENOVATE_VERSION}" -- renovate-config-validator --strict
 
       # A file with a shebang that is not executable is broken the moment
       # anyone follows the README and runs it directly. Git tracks the bit and

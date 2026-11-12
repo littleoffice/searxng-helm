@@ -50,6 +50,21 @@
       "semanticCommitType": "ci"
     },
     {
+      "description": "Renovate itself, pinned as RENOVATE_VERSION in renovate.yaml and ci.yaml. It runs with a token that can push here, so a new release waits a week before it is proposed, and it releases several times a day, so one PR a week is enough.",
+      "matchDatasources": [
+        "npm"
+      ],
+      "matchDepNames": [
+        "renovate"
+      ],
+      "groupName": "renovate",
+      "semanticCommitType": "ci",
+      "minimumReleaseAge": "7 days",
+      "schedule": [
+        "before 6am on monday"
+      ]
+    },
+    {
       "description": "Helm itself gates the support matrix. Separate PR so the major line is a deliberate decision, never a group side effect.",
       "matchDepNames": [
         "helm/helm"

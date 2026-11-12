@@ -27,6 +27,16 @@ on:
 # workflow needs no write scope of its own.
 permissions: {}
 
+env:
+  # Pinned, not `latest`: this job runs whatever npm serves under the name
+  # `renovate` with RENOVATE_TOKEN in its environment, a credential that can
+  # push branches here. Unpinned, one bad publish is repository write access.
+  # A published npm version cannot be replaced, so the version is the pin.
+  # Renovate bumps this line and the same one in ci.yaml together, a week
+  # after each release (see renovate.json).
+  # renovate: datasource=npm depName=renovate
+  RENOVATE_VERSION: "44.235.1"
+
 # A second run must never race the first over the same branches.
 concurrency:
   group: renovate
@@ -46,8 +56,8 @@ jobs:
           persist-credentials: false
 
       # npx + renovate is the same pattern the CI `workflows` job already uses
-      # for renovate-config-validator, so there is no third-party action to pin
-      # here beyond checkout above.
+      # for renovate-config-validator, at the same pinned RENOVATE_VERSION, so
+      # there is no third-party action to pin here beyond checkout above.
       - name: Run Renovate
         env:
           RENOVATE_TOKEN: ${{ secrets.RENOVATE_TOKEN }}
@@ -67,4 +77,4 @@ jobs:
               "(see .github/ci/README.md)."
             exit 0
           fi
-          npx --yes renovate
+          npx --yes "renovate@${RENOVATE_VERSION}"
