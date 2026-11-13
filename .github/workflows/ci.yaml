@@ -32,7 +32,7 @@ env:
   # chart that only installs under one of them is a chart with a support
   # burden nobody wrote down.
   # renovate: datasource=github-releases depName=helm/helm
-  HELM_VERSION: v4.3.1
+  HELM_VERSION: v4.3.2
   # The same pin as renovate.yaml, so the validator checks renovate.json
   # against the version that will read it.
   # renovate: datasource=npm depName=renovate
