@@ -133,6 +133,29 @@ no-op that logs and exits 0. Use either:
 `renovate.json`; it is set in `renovate.yaml` and permits only
 `bump-chart-version.sh`.
 
+### Auto-merge after a week
+
+`automerge.yaml` runs daily (07:37 UTC) and merges the open
+`renovate/chart-images` PR via
+[`automerge-chart-images.sh`](automerge-chart-images.sh) when **all** of these
+hold:
+
+- it has been open for **7 days** (counted from when the PR was opened);
+- it bumps **`searxng/searxng` and/or `littleoffice/mcp-searxng-relay`**. Those
+  carry engine fixes and the relay's security/feature set. A PR that only moves
+  `chainguard/curl`, valkey or its exporter is not mission critical and waits
+  for a person;
+- it touches nothing but `Chart.yaml` and the `digest:` lines of `values.yaml`;
+- GitHub reports it mergeable and every check on the head commit finished as
+  success, neutral or skipped.
+
+The merge is pinned to the head commit that was checked, so a Renovate push in
+between makes it fail and retry the next day rather than merge unchecked code.
+It merges with `RENOVATE_TOKEN` because a merge made with `GITHUB_TOKEN` would
+not trigger `release.yaml`. If branch protection requires an approving review,
+the merge fails with a warning; allow that token to bypass it, or approve by
+hand. *Run workflow* defaults to a dry run that only reports what it would do.
+
 ## Publishing
 
 `release.yaml` fires on pushes to `main` that touch packaged content, and is a

@@ -1,0 +1,58 @@
+name: Auto-merge chart images
+
+# Merges Renovate's grouped chart-image PR once it has been open for a week,
+# all checks are green, and it bumps searxng and/or mcp-searxng-relay. A PR
+# that only moves curl or valkey is left for a person. The rules live in
+# .github/ci/automerge-chart-images.sh; see .github/ci/README.md
+# ("Automated updates").
+
+on:
+  schedule:
+    # After Renovate (01:00/03:00 UTC) and the nightly scan (04:17), so a PR
+    # Renovate just rebased has had time to finish CI, and off the top of the
+    # hour. A PR whose checks are still running is simply retried next day.
+    - cron: "37 7 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Report what would be merged without merging
+        type: boolean
+        default: true
+
+permissions: {}
+
+concurrency:
+  group: automerge-chart-images
+  cancel-in-progress: false
+
+jobs:
+  automerge:
+    name: Merge week-old chart-image PR
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Merges with RENOVATE_TOKEN, not GITHUB_TOKEN: a push made with
+      # GITHUB_TOKEN does not trigger other workflows, so release.yaml would
+      # never publish the patch release the merge exists for.
+      - name: Merge if eligible
+        env:
+          GH_TOKEN: ${{ secrets.RENOVATE_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          MIN_AGE_DAYS: "7"
+          # Scheduled runs have no inputs and merge for real; a manual run
+          # defaults to a dry run.
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || false }}
+        run: |
+          set -euo pipefail
+          if [ -z "${GH_TOKEN}" ]; then
+            echo "RENOVATE_TOKEN is not set; nothing to do (see .github/ci/README.md)."
+            exit 0
+          fi
+          .github/ci/automerge-chart-images.sh
