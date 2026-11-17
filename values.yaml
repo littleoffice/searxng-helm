@@ -40,7 +40,7 @@ image:
   # Falls back to .Chart.AppVersion when empty. Pin this.
   tag: ""
   # If set, takes precedence over `tag`. e.g. "sha256:abc123..."
-  digest: "sha256:bed9946e14c009da4efdb477545eb48eb8d1d87af25e9738ff8b8584cb89a311"
+  digest: "sha256:47f9f764a453752574d117f6d77d40a1168fe3c95cb9e117cbc6aa6b295831c3"
   pullPolicy: IfNotPresent
 
 imagePullSecrets: []
@@ -447,7 +447,7 @@ valkey:
     registry: cgr.dev
     repository: chainguard/valkey
     tag: ""
-    digest: "sha256:db1b2d904dd1a6aa87c1c159da063d503d13a44a6659438ed947e6ac51705727"
+    digest: "sha256:a712c4c6839b324559d42354501b83636660a79e452e88619f9062da1f5d0c90"
     pullPolicy: IfNotPresent
 
   # Password is generated and stored in a Secret, then rendered into
@@ -612,7 +612,7 @@ tests:
     registry: cgr.dev
     repository: chainguard/curl
     tag: ""
-    digest: "sha256:8fef0c31d86d6c99d539bb281619984d306288d2ef21dd90756dd561cf5b014c"
+    digest: "sha256:36de00fa5513c9c17277ffc4fd680c4d89d88194380c7bff4165d3bb45b9610d"
 
 # -----------------------------------------------------------------------------
 # MCP relay — littleoffice/mcp-searxng-relay
